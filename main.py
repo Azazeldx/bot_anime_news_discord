@@ -373,9 +373,9 @@ def main():
         try:
             response = requests.get(site['url'], headers=HEADERS, timeout=15)
             
-            # --- FIX: MOJIBAKE ---
-            # Wajib memaksa UTF-8 untuk site Jepang jadul seperti MANTANWEB
-            response.encoding = 'utf-8'
+            # --- FIX FINAL ENCODING (Oricon & Mantanweb) ---
+            # apparent_encoding akan menebak apakah ini Shift-JIS (Jepang) atau UTF-8
+            response.encoding = response.apparent_encoding
             
             # Gunakan .text karena encoding sudah dipaksa
             soup = BeautifulSoup(response.text, 'html.parser')

@@ -1,0 +1,58 @@
+name: Jalanin Bot Berita
+
+on:
+  # Jadwal jalan otomatis (Cron Job)
+  schedule:
+    # Jalan setiap 15 menit
+    # Format: menit jam tanggal bulan hari
+    - cron: '*/15 * * * *'
+  
+  # Tombol manual buat ngetes (biar ga nunggu 15 menit)
+  workflow_dispatch:
+
+permissions:
+  contents: write # Izin supaya bot bisa update file history.json
+
+jobs:
+  run-news-scraper:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Ambil Kodingan (Checkout)
+        uses: actions/checkout@v4
+
+      - name: Siapkan Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Library
+        run: |
+          pip install requests beautifulsoup4 discord-webhook deep-translator python-dotenv
+
+      - name: Jalankan Bot
+        env:
+          # Ambil rahasia dari GitHub Secrets
+          DISCORD_WEBHOOK_ORICON: ${{ secrets.DISCORD_WEBHOOK_ORICON }}
+          DISCORD_WEBHOOK_GAME: ${{ secrets.DISCORD_WEBHOOK_GAME }}
+          DISCORD_WEBHOOK_INDO: ${{ secrets.DISCORD_WEBHOOK_INDO }}
+          DISCORD_WEBHOOK_BUZZ: ${{ secrets.DISCORD_WEBHOOK_BUZZ }}
+          DISCORD_WEBHOOK_GENERAL: ${{ secrets.DISCORD_WEBHOOK_GENERAL }}
+          DISCORD_WEBHOOK_LN: ${{ secrets.DISCORD_WEBHOOK_LN }}
+          DISCORD_WEBHOOK_VTUBER: ${{ secrets.DISCORD_WEBHOOK_VTUBER }}
+        run: python main.py
+
+      - name: Simpan History (Commit & Push)
+        # Langkah ini penting agar bot tidak lupa berita yang sudah dikirim
+        run: |
+          git config --global user.name "Bot Berita Otomatis"
+          git config --global user.email "bot@github.com"
+          
+          # Cek kalau ada perubahan di history.json
+          if [[ -n $(git status -s history.json) ]]; then
+            git add history.json
+            git commit -m "Update history berita [skip ci]"
+            git push
+          else
+            print("Tidak ada berita baru, tidak perlu save history.")
+          fi

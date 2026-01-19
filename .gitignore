@@ -1,0 +1,7 @@
+# Abaikan folder virtual environment
+venv/
+__pycache__/
+
+# Abaikan file rahasia/database lokal
+.env
+history.json

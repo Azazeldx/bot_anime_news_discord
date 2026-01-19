@@ -54,5 +54,5 @@ jobs:
             git commit -m "Update history berita [skip ci]"
             git push
           else
-            print("Tidak ada berita baru, tidak perlu save history.")
+            echo "Tidak ada berita baru, tidak perlu save history."
           fi

@@ -40,8 +40,8 @@ jobs:
           DISCORD_WEBHOOK_GENERAL: ${{ secrets.DISCORD_WEBHOOK_GENERAL }}
           DISCORD_WEBHOOK_LN: ${{ secrets.DISCORD_WEBHOOK_LN }}
           DISCORD_WEBHOOK_VTUBER: ${{ secrets.DISCORD_WEBHOOK_VTUBER }}
-          DISCORD_ANN: ${{ secrets.DISCORD_WEBHOOK_ANN }}
-          DISCORD_CRUNCHYROLL: ${{ secrets.DISCORD_WEBHOOK_CRUNCHYROLL }}
+          DISCORD_WEBOOK_ANN: ${{ secrets.DISCORD_WEBHOOK_ANN }}
+          DISCORD_WEBHOOK_CRUNCHYROLL: ${{ secrets.DISCORD_WEBHOOK_CRUNCHYROLL }}
         run: python main.py
 
       - name: Simpan History (Commit & Push)

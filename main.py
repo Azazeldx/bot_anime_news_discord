@@ -19,6 +19,7 @@ WH_LN = os.getenv("DISCORD_WEBHOOK_LN")
 WH_VTUBER = os.getenv("DISCORD_WEBHOOK_VTUBER")
 WH_ANN = os.getenv("DISCORD_WEBHOOK_ANN")
 WH_CRUNCHYROLL = os.getenv("DISCORD_WEBHOOK_CRUNCHYROLL")
+WH_JPGENERAL = os.getenv("DISCORD_WEBHOOK_JPGENERAL")
 
 HISTORY_FILE = "history.json"
 HEADERS = {
@@ -38,12 +39,11 @@ def save_history(history_list):
 def translate_text(text, source_lang):
     if source_lang == 'id': return text
     try:
-        # TRIK: Kalau aslinya Jepang, oper ke Inggris dulu biar bahasanya luwes
+        # Jp > En > Id
         if source_lang == 'ja':
             text_en = GoogleTranslator(source='ja', target='en').translate(text)
             return GoogleTranslator(source='en', target='id').translate(text_en)
         
-        # Kalau bukan Jepang (misal Spanyol/Inggris), langsung ke Indo aja
         return GoogleTranslator(source=source_lang, target='id').translate(text)
     except:
         return text
@@ -148,8 +148,6 @@ def parse_somoskudasai(soup):
 
 def parse_ann(soup):
     results = []
-    # Selector: Ambil kotak berita (herald box) yang memiliki class 'news'
-    # Kalau mau ambil review juga, hapus '.news' jadi 'div.herald.box'
     articles = soup.select('div.herald.box.news') 
     
     for item in articles[:5]:
@@ -224,24 +222,20 @@ def parse_crunchyroll(soup):
 
 def parse_gamebrott(soup):
     results = []
-    # Gamebrott membungkus artikelnya dalam tag <article> dengan class 'jeg_post'
     articles = soup.select('article.jeg_post')
     
     for item in articles[:5]:
         try:
-            # 1. Ambil Judul & Link
             title_elm = item.select_one('.jeg_post_title a')
             if not title_elm: continue
             
             title = title_elm.text.strip()
             link = title_elm.get('href')
 
-            # 2. Ambil Gambar (Hati-hati, Gamebrott pakai Lazy Load)
             img_elm = item.select_one('.jeg_thumb img')
             img_src = ""
             
             if img_elm:
-                # Prioritaskan 'data-src' karena 'src' isinya cuma placeholder (gambar kosong/svg)
                 img_src = img_elm.get('data-src') or img_elm.get('src')
             
             results.append({
@@ -270,6 +264,42 @@ def parse_yaraon(soup):
                 "img": img_elm.get('src') if img_elm else "",
                 "source": "Yaraon!"
             })
+    return results
+
+
+def parse_animatetimes(soup):
+    results = []
+    articles = soup.select('.row--foritem .c-item')
+
+    for item in articles[:5]:
+        try:
+            link_elm = item.find('a', class_='c-item-link')
+            if not link_elm: continue
+            
+            link = link_elm.get('href')
+            if link and not link.startswith('http'):
+                link = "https://www.animatetimes.com" + link
+
+            title_elm = item.find('div', class_='c-item-ttl__heading')
+            if not title_elm: continue
+            title = title_elm.text.strip()
+
+            img_elm = item.find('img')
+            img_src = ""
+            if img_elm:
+                img_src = img_elm.get('src')
+            
+            results.append({
+                "title": title,
+                "link": link,
+                "img": img_src,
+                "source": "Animate Times"
+            })
+            
+        except Exception as e:
+            print(f"Error parsing Animate Times: {e}")
+            continue
+    
     return results
 
 def parse_otakomu(soup):
@@ -457,6 +487,149 @@ def parse_dengeki(soup):
         except: continue
     return results
 
+def parse_vtub0(soup):
+    results = []
+    articles = soup.select('article.post-list')
+    
+    for item in articles[:5]:
+        try:
+            
+            link_elm = item.find('a')
+            if not link_elm: continue
+            link = link_elm.get('href')
+
+            title_elm = item.find(class_='entry-title')
+            if not title_elm: continue
+            title = title_elm.text.strip()
+
+            img_elm = item.find('img')
+            img_src = ""
+            if img_elm:
+                img_src = img_elm.get('src')
+            
+            results.append({
+                "title": title,
+                "link": link,
+                "img": img_src,
+                "source": "V-Tuber ZERO"
+            })
+            
+        except Exception as e:
+            print(f"Error parsing V-Tuber ZERO: {e}")
+            continue
+
+    return results
+
+def parse_moguravr(soup):
+    results = []
+    
+    articles = soup.select('a.mg-hover-card-link')
+    
+    for item in articles[:5]:
+        try:
+            
+            link = item.get('href')
+            if not link: continue
+
+            title_elm = item.find('h3', class_='card-title')
+            if not title_elm: continue
+            title = title_elm.text.strip()
+
+            img_elm = item.find('img', class_='mg-img-cover')
+            img_src = ""
+            if img_elm:
+                img_src = img_elm.get('src')
+            
+            results.append({
+                "title": title,
+                "link": link,
+                "img": img_src,
+                "source": "Mogura VR"
+            })
+            
+        except Exception as e:
+            print(f"Error parsing Mogura VR: {e}")
+            continue
+
+    return results
+
+def parse_yahoo_jp(soup):
+    results = []
+    articles = soup.find_all('div', class_=lambda x: x and 'sc-naer8t-2' in x)
+
+    for item in articles[:5]:
+        try:
+            link_elm = item.find('a')
+            if not link_elm: continue
+            
+            link = link_elm.get('href')
+            title = link_elm.get('aria-label')
+            
+            if not title:
+                sibling = item.find_next_sibling('div')
+                if sibling:
+                    title_text = sibling.find('p', class_=lambda x: x and 'sc-naer8t-3' in x)
+                    if title_text: title = title_text.text.strip()
+            
+            if not title: continue
+
+            img_elm = item.find('img')
+            img_src = ""
+            if img_elm:
+                img_src = img_elm.get('src')
+            
+            results.append({
+                "title": title,
+                "link": link,
+                "img": img_src,
+                "source": "Yahoo! Japan News"
+            })
+            
+        except Exception as e:
+            print(f"Error parsing Yahoo JP: {e}")
+            continue
+
+    return results
+
+def parse_4gamer(soup):
+    results = []
+    articles = soup.select('div.V2_article_container')
+
+    for item in articles[:5]:
+        try:
+            h2_elm = item.find('h2')
+            if not h2_elm: continue
+            
+            link_elm = h2_elm.find('a')
+            if not link_elm: continue
+
+            title = link_elm.text.strip()
+            link = link_elm.get('href')
+            
+            if link and not link.startswith('http'):
+                link = "https://www.4gamer.net" + link
+
+            img_elm = item.find('img', class_='img_right_top')
+            img_src = ""
+            if img_elm:
+                img_src = img_elm.get('src')
+                # Fix Relative Image
+                if img_src and not img_src.startswith('http'):
+                    img_src = "https://www.4gamer.net" + img_src
+
+            results.append({
+                "title": title,
+                "link": link,
+                "img": img_src,
+                "source": "4Gamer.net"
+            })
+
+        except Exception as e:
+            print(f"Error parsing 4Gamer: {e}")
+            continue
+
+    return results
+
 # --- DAFTAR WEBSITE & CONFIG TAMPILAN ---
 TARGETS = [
     # 1. ORICON
@@ -469,6 +642,7 @@ TARGETS = [
     # 3. GAME & TECH
     {"url": "https://www.famitsu.com/category/pc-game/page/1", "lang": "ja", "parser": parse_famitsu, "webhook": WH_GAME, "color": "00ff00", "emoji": "🎮"},
     {"url": "https://gamebrott.com/", "lang": "id", "parser": parse_gamebrott, "webhook": WH_GAME, "color": "e15f41", "emoji": "🎮"},
+    {"url": "https://www.4gamer.net/", "lang": "ja", "parser": parse_4gamer, "webhook": WH_GAME, "color": "003b86", "emoji": "🎮"},
 
     # 4. GOSIP/BUZZ
     {"url": "http://yaraon-blog.com/", "lang": "ja", "parser": parse_yaraon, "webhook": WH_BUZZ, "color": "ffd700", "emoji": "🔥"},
@@ -482,6 +656,7 @@ TARGETS = [
     {"url": "https://www.famitsu.com/category/anime/page/1", "lang": "ja", "parser": parse_famitsu, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
     {"url": "https://animeanime.jp/category/news/latest/latest/", "lang": "ja", "parser": parse_animeanime, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
     {"url": "https://dengekionline.com/category/anime/page/1", "lang": "ja", "parser": parse_dengeki, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
+    {"url": "https://www.animatetimes.com/anime/", "lang": "ja", "parser": parse_animatetimes, "webhook": WH_GENERAL, "color": "003c86", "emoji": "🇯🇵"},
 
     # 6. LIGHT NOVEL & Manga
     {"url": "https://animeanime.jp/category/news/novel/latest/", "lang": "ja", "parser": parse_animeanime, "webhook": WH_LN, "color": "9900cc", "emoji": "📚"},
@@ -490,12 +665,18 @@ TARGETS = [
 
     # 7. VTUBER
     {"url": "https://dengekionline.com/special/vtuber", "lang": "ja", "parser": parse_dengeki, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"}, 
+    {"url": "https://vtub0.com/", "lang": "ja", "parser": parse_vtub0, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"},
+    {"url": "https://www.oricon.co.jp/news/tag/id/vtuber/", "lang": "ja", "parser": parse_oricon, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"},
+    {"url": "https://www.moguravr.com/category/virtual-youtuber/", "lang": "ja", "parser": parse_moguravr, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"},
 
     # 8. ANIME NEWS NETWORK (Official)
     {"url": "https://www.animenewsnetwork.com/", "lang": "en", "parser": parse_ann, "webhook": WH_ANN, "color": "1c3c74", "emoji": "🇺🇸"},
 
     # 9. CRUNCHYROLL (Official)
     {"url": "https://www.crunchyroll.com/news", "lang": "en", "parser": parse_crunchyroll, "webhook": WH_CRUNCHYROLL, "color": "f47521", "emoji": "🟠"},
+
+    # 10. JAPAN GENERAL NEWS WH_JPGENERAL
+    {"url": "https://news.yahoo.co.jp/flash", "lang": "ja", "parser": parse_yahoo_jp, "webhook": WH_JPGENERAL, "color": "ff0033", "emoji": "🔴"},    
 ]
 
 # --- MAIN LOOP ---

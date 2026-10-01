@@ -1,13 +1,12 @@
-import json
 import os
 import sys
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
-from deep_translator import GoogleTranslator
 from discord_webhook import DiscordEmbed, DiscordWebhook
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
@@ -16,14 +15,12 @@ from urllib3.util.retry import Retry
 load_dotenv()
 
 import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
+import history_store  # noqa: E402
 from sources import TARGETS, parse_rss  # noqa: E402
 
 # --- KONFIGURASI ---
 WH_AREAANIME = os.getenv("DISCORD_WEBHOOK_AREAANIME")
 HISTORY_FILE = "history.json"
-HISTORY_LIMIT = 2000          # cukup untuk ±27 sumber x 5 berita x banyak run, supaya berita lama tidak terkirim ulang
-AREAANIME_SEEN_LIMIT = 3000
-AREAANIME_POSTS_LIMIT = 200
 DRY_RUN = "--dry-run" in sys.argv   # cek hasil tanpa kirim ke Discord & tanpa simpan history
 
 HEADERS = {
@@ -35,7 +32,8 @@ HEADERS = {
 def make_session():
     session = requests.Session()
     session.headers.update(HEADERS)
-    retry = Retry(total=2, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+    retry = Retry(total=2, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504],
+                  respect_retry_after_header=False)
     session.mount("http://", HTTPAdapter(max_retries=retry))
     session.mount("https://", HTTPAdapter(max_retries=retry))
     return session
@@ -46,48 +44,51 @@ SESSION = make_session()
 
 # --- FUNGSI HELPER ---
 def load_history():
-    """Format: {"sent": [link], "areaanime_seen": [link], "areaanime_posts": [{link, key, title, ts}]}.
-    Format lama (list link) otomatis dikonversi."""
-    empty = {"sent": [], "areaanime_seen": [], "areaanime_posts": []}
-    if not os.path.exists(HISTORY_FILE):
-        return empty
-    try:
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return empty
-    if isinstance(data, list):
-        # Migrasi: semua berita lama dianggap sudah dinilai, supaya Areaanime tidak memposting berita basi.
-        return {"sent": data, "areaanime_seen": list(data), "areaanime_posts": []}
-    return {**empty, **data}
+    return history_store.load(HISTORY_FILE)
 
 
 def save_history(history):
-    data = {
-        "sent": history["sent"][-HISTORY_LIMIT:],
-        "areaanime_seen": history["areaanime_seen"][-AREAANIME_SEEN_LIMIT:],
-        "areaanime_posts": history["areaanime_posts"][-AREAANIME_POSTS_LIMIT:],
-    }
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
+    history_store.save(HISTORY_FILE, history)
+
+
+@lru_cache(maxsize=512)
+def google_translate(text, source, target):
+    """Transport Google Translate dengan timeout; deep-translator tidak membatasinya."""
+    with requests.get("https://translate.google.com/m",
+                      params={"sl": source, "tl": target, "q": text},
+                      timeout=(5, 10)) as response:
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        result = soup.select_one("div.t0, div.result-container")
+        if result is None or not result.get_text().strip():
+            raise ValueError("Hasil Google Translate tidak ditemukan")
+        return result.get_text().strip()
+
+
+translate_failures = 0  # kalau Google terus menolak, berhenti mencoba supaya run tidak molor
 
 
 def translate_text(text, source_lang):
-    if not text or source_lang == 'id': return text
+    global translate_failures
+    if not text or source_lang == 'id' or translate_failures >= 3: return text
     # Jp > En > Id (hasilnya lebih natural daripada Jp > Id langsung)
     steps = [('ja', 'en'), ('en', 'id')] if source_lang == 'ja' else [(source_lang, 'id')]
     for attempt in range(2):
         try:
             result = text
             for src, dst in steps:
-                result = GoogleTranslator(source=src, target=dst).translate(result)
+                result = google_translate(result, src, dst)
                 time.sleep(0.3)  # batas Google Translate ±5 request/detik
+            translate_failures = 0
             return result or text
         except Exception as e:
             if attempt == 0:
                 time.sleep(5)
             else:
-                print(f"    Gagal translate: {str(e)[:80]}")
+                print(f"    Gagal translate ({type(e).__name__}); memakai judul asli.")
+    translate_failures += 1
+    if translate_failures == 3:
+        print("    Google Translate terus menolak, terjemahan dimatikan untuk sisa run ini.")
     return text
 
 
@@ -145,6 +146,7 @@ def enrich(item):
     item['_enriched'] = True
     try:
         response = SESSION.get(item['link'], timeout=12)
+        response.raise_for_status()
         response.encoding = response.apparent_encoding
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -161,7 +163,7 @@ def enrich(item):
         if not item.get('summary'):
             item['summary'] = meta('og:description', 'description', 'twitter:description')
     except Exception as e:
-        print(f"    (meta artikel tidak terbaca: {e})")
+        print(f"    (meta artikel tidak terbaca: {type(e).__name__})")
     return item
 
 
@@ -169,19 +171,29 @@ def send_webhook(url, embed, username=None):
     if DRY_RUN:
         print(f"    [DRY-RUN] {embed.title}")
         return True
-    webhook = DiscordWebhook(url=url, username=username, rate_limit_retry=True, timeout=20)
+    webhook = DiscordWebhook(url=url, username=username, rate_limit_retry=False, timeout=20)
     webhook.add_embed(embed)
     try:
-        response = webhook.execute()
-        if response.status_code == 400 and webhook.embeds[0].get('image'):
-            print("    Gagal kirim (400). Mencoba kirim tanpa gambar...")
-            webhook.embeds[0].pop('image')
-            response = webhook.execute()
-        if response.ok:
-            return True
-        print(f"    Webhook gagal ({response.status_code}): {response.text[:200]}")
+        for attempt in range(3):
+            # Panggilan transport menghindari retry 429 tanpa batas milik library.
+            with webhook.api_post_request() as response:
+                if response.status_code in (200, 204):
+                    return True
+                if attempt < 2 and response.status_code == 400 and webhook.embeds[0].get('image'):
+                    print("    Gagal kirim (400). Mencoba kirim tanpa gambar...")
+                    webhook.embeds[0].pop('image')
+                    continue
+                if attempt < 2 and response.status_code == 429:
+                    delay = float(response.json().get('retry_after', 1))
+                    if 0 <= delay <= 30:
+                        print(f"    Discord rate limit, tunggu {delay:g} detik...")
+                        time.sleep(delay + 0.15)
+                        continue
+                print(f"    Webhook gagal ({response.status_code}); akan dicoba pada run berikutnya.")
+                return False
     except Exception as err:
-        print(f"    Webhook error: {err}")
+        # Pesan exception requests dapat memuat token URL webhook.
+        print(f"    Webhook error ({type(err).__name__}); akan dicoba pada run berikutnya.")
     return False
 
 
@@ -258,8 +270,9 @@ def main():
     history = load_history()
     sent = set(history["sent"])
     all_items = []
+    category_batches = []
 
-    # 1. Ambil berita & kirim ke channel kategori masing-masing
+    # 1. Ambil semua sumber dahulu, supaya Areaanime tidak menunggu seluruh kiriman kategori.
     for site in TARGETS:
         webhook_url = os.getenv(f"DISCORD_WEBHOOK_{site['channel']}")
         if not webhook_url and not WH_AREAANIME:
@@ -275,17 +288,8 @@ def main():
         if not items:
             print("    Tidak ada berita ditemukan (Cek selector?)")
         all_items.extend(items)
-
-        if not webhook_url:
-            continue
-        for item in reversed(items):  # kirim dari yang paling lama supaya urutan di Discord benar
-            if item['link'] in sent:
-                continue
-            print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
-            if send_webhook(webhook_url, build_news_embed(enrich(item))):
-                sent.add(item['link'])
-                history["sent"].append(item['link'])
-            time.sleep(1.5)
+        if webhook_url:
+            category_batches.append((webhook_url, items))
 
     # 2. Kurasi berita berpotensi viral untuk channel Areaanime
     if WH_AREAANIME:
@@ -300,21 +304,36 @@ def main():
         picks = curator.select(candidates, all_items, history["areaanime_posts"])
         if not picks:
             print(f"    Tidak ada berita yang cukup menarik dari {len(candidates)} kandidat.")
-        posted = set()
+        # Kandidat yang tidak dipilih sudah selesai dinilai. Pilihan tetap bisa dicoba ulang
+        # jika pengiriman gagal atau proses berhenti sebelum sempat mengirimnya.
+        selected = {item['link'] for item, _ in picks}
+        history["areaanime_seen"].extend(c['link'] for c in candidates if c['link'] not in selected)
+        if not DRY_RUN:
+            save_history(history)
         for item, info in picks:
             print(f"    [AREAANIME {info['score']:g}/10] {item['source']}: {item['title'][:40]}...")
             if send_webhook(WH_AREAANIME, build_areaanime_embed(enrich(item), info), username="Areaanime Radar"):
-                posted.add(item['link'])
                 history["areaanime_posts"].append({
                     "link": item['link'], "key": info['key'], "title": item['title'],
                     "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 })
+                history["areaanime_seen"].append(item['link'])
+                if not DRY_RUN:
+                    save_history(history)
             time.sleep(1.5)
 
-        # Kandidat yang sudah dinilai tidak dinilai ulang (hemat token Claude),
-        # kecuali yang terpilih tapi gagal terkirim.
-        failed = {item['link'] for item, _ in picks} - posted
-        history["areaanime_seen"].extend(c['link'] for c in candidates if c['link'] not in failed)
+    # 3. Kirim kategori dari yang paling lama, simpan segera setelah setiap kiriman berhasil.
+    for webhook_url, items in category_batches:
+        for item in reversed(items):
+            if item['link'] in sent:
+                continue
+            print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
+            if send_webhook(webhook_url, build_news_embed(enrich(item))):
+                sent.add(item['link'])
+                history["sent"].append(item['link'])
+                if not DRY_RUN:
+                    save_history(history)
+            time.sleep(1.5)
 
     if DRY_RUN:
         print("DRY-RUN: history tidak disimpan.")

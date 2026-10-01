@@ -292,7 +292,7 @@ def llm_rank(candidates, recent_topics):
         ],
     }
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=60, max_retries=1)
     try:
         response = client.beta.messages.create(
             model=MODEL,
@@ -310,6 +310,11 @@ def llm_rank(candidates, recent_topics):
     except anthropic.APIConnectionError as e:
         print(f"    [Areaanime] Gagal konek ke Claude API: {e} -> pakai heuristik")
         return None
+    except (TypeError, ValueError):
+        print("    [Areaanime] Konfigurasi Claude tidak didukung SDK -> pakai heuristik")
+        return None
+    finally:
+        client.close()
 
     if response.stop_reason in ("refusal", "max_tokens"):
         print(f"    [Areaanime] Claude berhenti ({response.stop_reason}) -> pakai heuristik")

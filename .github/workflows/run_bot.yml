@@ -21,11 +21,15 @@ concurrency:
 jobs:
   run-news-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Ambil Kodingan (Checkout)
+        id: checkout
         uses: actions/checkout@v4
+        with:
+          # Run yang antre harus membaca history branch terbaru, bukan SHA saat jadwal dibuat.
+          ref: ${{ github.ref_name }}
 
       - name: Siapkan Python
         uses: actions/setup-python@v5
@@ -35,6 +39,9 @@ jobs:
 
       - name: Install Library
         run: pip install -r requirements.txt
+
+      - name: Uji Regresi
+        run: python -m unittest discover -s tests -v
 
       - name: Jalankan Bot
         env:
@@ -53,20 +60,39 @@ jobs:
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
           # Opsional: kalau diisi, kurasi Areaanime dinilai Claude + dapat saran judul feed
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python main.py
+        run: python -u main.py
+        timeout-minutes: 22
 
       - name: Simpan History (Commit & Push)
-        # Langkah ini penting agar bot tidak lupa berita yang sudah dikirim
+        # Langkah ini penting agar bot tidak lupa berita yang sudah dikirim.
+        # Tetap jalan walau langkah bot gagal/timeout, supaya berita yang sudah terkirim tidak dikirim ulang.
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           git config --global user.name "Bot Berita Otomatis"
           git config --global user.email "bot@github.com"
+          # Gabungkan kedua daftar kiriman ketika history berubah selama bot berjalan.
+          git config merge.news-history.driver 'python history_store.py --merge "%A" "%B"'
 
           # Cek kalau ada perubahan di history.json
           if [[ -n $(git status -s history.json) ]]; then
             git add history.json
             git commit -m "Update history berita [skip ci]"
-            git pull --rebase
-            git push
+            for attempt in 1 2 3; do
+              git pull --rebase origin "${GITHUB_REF_NAME}"
+              if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                exit 0
+              fi
+            done
+            echo "Gagal push history setelah 3 percobaan."
+            exit 1
           else
             echo "Tidak ada berita baru, tidak perlu save history."
           fi
+
+      - name: Cadangkan History
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-history-${{ github.run_id }}
+          path: history.json
+          retention-days: 7

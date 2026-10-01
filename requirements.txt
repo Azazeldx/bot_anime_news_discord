@@ -1,7 +1,6 @@
 requests>=2.32
 beautifulsoup4>=4.12
 discord-webhook>=1.4.1
-deep-translator>=1.11.4
 python-dotenv>=1.0
 anthropic>=1.11
 defusedxml>=0.7

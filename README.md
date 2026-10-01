@@ -10,6 +10,7 @@ Bot yang mengambil berita anime, manga, game, dan VTuber dari ±25 sumber (Jepan
 | `sources.py` | Daftar sumber (`TARGETS`) dan parser tiap website / RSS |
 | `curator.py` | Kurasi berita berpotensi viral untuk channel Areaanime |
 | `history.json` | Memori berita yang sudah dikirim (di-commit otomatis oleh bot) |
+| `history_store.py` | Simpan history secara atomik dan gabungkan history saat Git rebase |
 
 ## Channel & Secrets
 
@@ -32,6 +33,10 @@ Isi di **Settings → Secrets and variables → Actions** (atau di `.env` saat m
 
 Channel yang webhook-nya kosong otomatis dilewati.
 
+Areaanime diproses setelah pengambilan sumber, sebelum pengiriman ke channel kategori. Setiap kiriman yang berhasil langsung disimpan ke history. Jika proses terhenti, GitHub Actions tetap mencoba menyimpan history dan mencadangkannya sebagai artifact selama 7 hari.
+
+Permintaan terjemahan punya timeout dan cache selama satu run. Setelah tiga kegagalan berturut-turut, terjemahan dihentikan untuk sisa run dan judul asli dipakai. Retry rate limit Discord dibatasi; kiriman yang gagal tetap bisa dicoba pada run berikutnya. History yang rusak menghentikan bot agar berita lama tidak terkirim ulang.
+
 ## Channel Areaanime
 
 Setiap run, semua berita yang terambil dinilai potensi viralnya untuk audiens Indonesia. Hanya berita dengan skor ≥ 7/10 yang dikirim, maksimal 3 per run, dan topik yang sama tidak diposting ulang dalam 72 jam.
@@ -49,6 +54,14 @@ venv\Scripts\pip install -r requirements.txt
 venv\Scripts\python main.py --dry-run   # cek hasil tanpa kirim ke Discord & tanpa ubah history
 venv\Scripts\python main.py             # jalan sungguhan
 ```
+
+Jika akan melakukan `git pull --rebase` pada history yang berubah secara lokal, aktifkan penggabungan JSON (sudah otomatis di GitHub Actions):
+
+```bash
+git config merge.news-history.driver 'python history_store.py --merge "%A" "%B"'
+```
+
+Uji regresi tanpa jaringan atau kiriman Discord: `python -m unittest discover -s tests`.
 
 ## Menambah sumber baru
 

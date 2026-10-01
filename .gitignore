@@ -2,6 +2,7 @@
 venv/
 __pycache__/
 
-# Abaikan file rahasia/database lokal
+# Abaikan file rahasia
 .env
-history.json
+
+# Catatan: history.json SENGAJA di-commit oleh GitHub Actions (memori berita yang sudah dikirim)

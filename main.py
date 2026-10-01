@@ -1,761 +1,327 @@
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from urllib.parse import urljoin
+
 import requests
 from bs4 import BeautifulSoup
-from discord_webhook import DiscordWebhook, DiscordEmbed
 from deep_translator import GoogleTranslator
-import json
-import time
-import os
+from discord_webhook import DiscordEmbed, DiscordWebhook
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
 
-# --- KONFIGURASI WEBHOOK ---
-WH_ORICON = os.getenv("DISCORD_WEBHOOK_ORICON")
-WH_GAME = os.getenv("DISCORD_WEBHOOK_GAME")
-WH_INDO = os.getenv("DISCORD_WEBHOOK_INDO")
-WH_BUZZ = os.getenv("DISCORD_WEBHOOK_BUZZ")
-WH_GENERAL = os.getenv("DISCORD_WEBHOOK_GENERAL")
-WH_LN = os.getenv("DISCORD_WEBHOOK_LN")
-WH_VTUBER = os.getenv("DISCORD_WEBHOOK_VTUBER")
-WH_ANN = os.getenv("DISCORD_WEBHOOK_ANN")
-WH_CRUNCHYROLL = os.getenv("DISCORD_WEBHOOK_CRUNCHYROLL")
-WH_JPGENERAL = os.getenv("DISCORD_WEBHOOK_JPGENERAL")
+import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
+from sources import TARGETS, parse_rss  # noqa: E402
 
+# --- KONFIGURASI ---
+WH_AREAANIME = os.getenv("DISCORD_WEBHOOK_AREAANIME")
 HISTORY_FILE = "history.json"
+HISTORY_LIMIT = 2000          # cukup untuk ±27 sumber x 5 berita x banyak run, supaya berita lama tidak terkirim ulang
+AREAANIME_SEEN_LIMIT = 3000
+AREAANIME_POSTS_LIMIT = 200
+DRY_RUN = "--dry-run" in sys.argv   # cek hasil tanpa kirim ke Discord & tanpa simpan history
+
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8,id;q=0.7',
 }
+
+
+def make_session():
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    retry = Retry(total=2, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
+
+SESSION = make_session()
+
 
 # --- FUNGSI HELPER ---
 def load_history():
-    if not os.path.exists(HISTORY_FILE): return []
+    """Format: {"sent": [link], "areaanime_seen": [link], "areaanime_posts": [{link, key, title, ts}]}.
+    Format lama (list link) otomatis dikonversi."""
+    empty = {"sent": [], "areaanime_seen": [], "areaanime_posts": []}
+    if not os.path.exists(HISTORY_FILE):
+        return empty
     try:
-        with open(HISTORY_FILE, 'r') as f: return json.load(f)
-    except: return []
+        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return empty
+    if isinstance(data, list):
+        # Migrasi: semua berita lama dianggap sudah dinilai, supaya Areaanime tidak memposting berita basi.
+        return {"sent": data, "areaanime_seen": list(data), "areaanime_posts": []}
+    return {**empty, **data}
 
-def save_history(history_list):
-    with open(HISTORY_FILE, 'w') as f: json.dump(history_list[-300:], f)
+
+def save_history(history):
+    data = {
+        "sent": history["sent"][-HISTORY_LIMIT:],
+        "areaanime_seen": history["areaanime_seen"][-AREAANIME_SEEN_LIMIT:],
+        "areaanime_posts": history["areaanime_posts"][-AREAANIME_POSTS_LIMIT:],
+    }
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+
 
 def translate_text(text, source_lang):
-    if source_lang == 'id': return text
-    try:
-        # Jp > En > Id
-        if source_lang == 'ja':
-            text_en = GoogleTranslator(source='ja', target='en').translate(text)
-            return GoogleTranslator(source='en', target='id').translate(text_en)
-        
-        return GoogleTranslator(source=source_lang, target='id').translate(text)
-    except:
-        return text
-
-# --- BAGIAN PARSER ---
-
-def parse_oricon(soup):
-    results = []
-    articles = soup.select('article.card')
-    for item in articles[:5]:
-        title_elm = item.find('h2', class_='title')
-        link_elm = item.find('a')
-        img_elm = item.find('img')
-        if title_elm and link_elm:
-            img_src = img_elm.get('data-original') or img_elm.get('src') if img_elm else ""
-            results.append({
-                "title": title_elm.text.strip(),
-                "link": "https://www.oricon.co.jp" + link_elm['href'],
-                "img": img_src,
-                "source": "Oricon News"
-            })
-    return results
-
-def parse_gamerwk(soup):
-    results = []
-    articles = soup.find_all('h3', class_='entry-title')
-    for item in articles[:5]:
-        link_elm = item.find('a')
-        if not link_elm: continue
-        
-        img_src = ""
-        parent = item.find_parent('div')
-        if parent:
-            img_elm = parent.find('img')
-            if img_elm:
-                img_src = img_elm.get('data-img-url') or img_elm.get('src')
-        
-        results.append({
-            "title": link_elm.get('title') or link_elm.text.strip(),
-            "link": link_elm.get('href'),
-            "img": img_src,
-            "source": "Gamerwk"
-        })
-    return results
-
-def parse_natalie_comic(soup):
-    results = []
-    articles = soup.select('.NA_card')
-    for item in articles[:5]:
-        link_elm = item.find('a')
-        title_elm = item.find('p', class_='NA_card_title')
-        img_elm = item.find('img')
-        if title_elm and link_elm:
-            results.append({
-                "title": title_elm.text.strip(),
-                "link": "https://natalie.mu" + link_elm['href'],
-                "img": img_elm.get('data-src') or img_elm.get('src') if img_elm else "",
-                "source": "Natalie Comic"
-            })
-    return results
-
-def parse_somoskudasai(soup):
-    results = []
-    articles = soup.select('ul.ul li') 
-    
-    for item in articles[:5]:
+    if not text or source_lang == 'id': return text
+    # Jp > En > Id (hasilnya lebih natural daripada Jp > Id langsung)
+    steps = [('ja', 'en'), ('en', 'id')] if source_lang == 'ja' else [(source_lang, 'id')]
+    for attempt in range(2):
         try:
-            link_elm = item.find('a')
-            if not link_elm: continue
-            
-            link = link_elm.get('href')
-            if link and link.startswith('./'):
-                link = link.replace('./', 'https://somoskudasai.org/', 1)
-            elif link and not link.startswith('http'):
-                link = 'https://somoskudasai.org/' + link.lstrip('/')
-
-            title_elm = link_elm.find('span', class_='h3')
-            
-            if title_elm:
-                title = title_elm.text.strip()
+            result = text
+            for src, dst in steps:
+                result = GoogleTranslator(source=src, target=dst).translate(result)
+                time.sleep(0.3)  # batas Google Translate ±5 request/detik
+            return result or text
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(5)
             else:
-                title = link_elm.get('title', '').strip()
-
-            if not title: continue
-
-            img_elm = item.find('img')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-                if img_src and img_src.startswith('./'):
-                    img_src = img_src.replace('./', 'https://somoskudasai.org/', 1)
-            
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "SomosKudasai"
-            })
-        except Exception as e:
-            continue
-    return results
-
-def parse_ann(soup):
-    results = []
-    articles = soup.select('div.herald.box.news') 
-    
-    for item in articles[:5]:
-        try:
-    
-            title_elm = item.find('h3')
-            if not title_elm: continue
-            
-            link_elm = title_elm.find('a')
-            if not link_elm: continue
-
-            title = link_elm.text.strip()
-            
-            link = link_elm.get('href')
-            if link and not link.startswith('http'):
-                link = "https://www.animenewsnetwork.com" + link
-
-            img_src = ""
-            thumb_div = item.find('div', class_='thumbnail')
-            if thumb_div:
-                img_src = thumb_div.get('data-src')
-                if img_src and not img_src.startswith('http'):
-                    img_src = "https://www.animenewsnetwork.com" + img_src
-
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "Anime News Network"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing ANN: {e}")
-            continue
-
-    return results
-
-def parse_crunchyroll(soup):
-    results = []
-    articles = soup.find_all('article')
-    
-    for item in articles[:5]:
-        try:
-            title_elm = item.find('h3')
-            if not title_elm: continue
-            title = title_elm.text.strip()
-            
-            link_elm = title_elm.find_parent('a')
-            if not link_elm: continue
-            
-            link = link_elm.get('href')
-            if link and not link.startswith('http'):
-                link = "https://www.crunchyroll.com" + link
-
-            img_elm = item.find('img')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "Crunchyroll"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing Crunchyroll: {e}")
-            continue
-
-    return results
-
-def parse_gamebrott(soup):
-    results = []
-    articles = soup.select('article.jeg_post')
-    
-    for item in articles[:5]:
-        try:
-            title_elm = item.select_one('.jeg_post_title a')
-            if not title_elm: continue
-            
-            title = title_elm.text.strip()
-            link = title_elm.get('href')
-
-            img_elm = item.select_one('.jeg_thumb img')
-            img_src = ""
-            
-            if img_elm:
-                img_src = img_elm.get('data-src') or img_elm.get('src')
-            
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "Gamebrott"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing Gamebrott: {e}")
-            continue
-
-    return results
-
-def parse_yaraon(soup):
-    results = []
-    articles = soup.select('div.entrylist') 
-    for item in articles[:5]:
-        title_elm = item.find('h4', class_='entrylist_title').find('a')
-        img_elm = item.find('figure').find('img') if item.find('figure') else None
-        if title_elm:
-            results.append({
-                "title": title_elm.text.strip(),
-                "link": title_elm.get('href'),
-                "img": img_elm.get('src') if img_elm else "",
-                "source": "Yaraon!"
-            })
-    return results
+                print(f"    Gagal translate: {str(e)[:80]}")
+    return text
 
 
-def parse_animatetimes(soup):
-    results = []
-    articles = soup.select('.row--foritem .c-item')
+def translate_item(item):
+    """Terjemahkan judul + ringkasan dalam satu request, hasilnya disimpan di item supaya tidak diulang."""
+    if 'title_id' in item:
+        return item
+    title, summary = item['title'], clip(item.get('summary'), 350)
+    item['title_id'], item['summary_id'] = title, summary
+    if item['lang'] == 'id':
+        return item
+    if summary:
+        source_text = f"{title}\n\n{summary}"
+        joined = translate_text(source_text, item['lang'])
+        parts = joined.split("\n\n", 1)
+        if joined != source_text and len(parts) == 2:
+            item['title_id'], item['summary_id'] = parts[0].strip(), parts[1].strip()
+            return item
+    # Fallback: terjemahkan judul saja (ringkasan bahasa asing tanpa terjemahan tidak ditampilkan)
+    item['title_id'], item['summary_id'] = translate_text(title, item['lang']), ""
+    return item
 
-    for item in articles[:5]:
-        try:
-            link_elm = item.find('a', class_='c-item-link')
-            if not link_elm: continue
-            
-            link = link_elm.get('href')
-            if link and not link.startswith('http'):
-                link = "https://www.animatetimes.com" + link
 
-            title_elm = item.find('div', class_='c-item-ttl__heading')
-            if not title_elm: continue
-            title = title_elm.text.strip()
+def clip(text, limit):
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
-            img_elm = item.find('img')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-            
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "Animate Times"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing Animate Times: {e}")
-            continue
-    
-    return results
 
-def parse_otakomu(soup):
-    results = []
-    articles = soup.select('article')
-    for item in articles[:5]:
-        title_elm = None
-        link_elm = None
-        img_src = ""
-        
-        if item.find('h2', class_='articleTop-title'):
-            title_elm = item.find('h2', class_='articleTop-title')
-            link_elm = item.find('a', class_='articleTop-link')
-            img_div = item.find('div', class_='articleTop-img')
-        else:
-            title_elm = item.find('h2', class_='articleBottom-title')
-            if title_elm: link_elm = title_elm.find('a')
-            img_div = item.find('a', class_='articleBottom-img-link')
+def favicon(url):
+    return f"https://www.google.com/s2/favicons?domain={url.split('/')[2]}&sz=64"
 
-        if img_div and img_div.has_attr('style'):
-            style_text = img_div['style']
-            if 'url(' in style_text:
-                try: img_src = style_text.split('url(')[1].split(')')[0].strip("'").strip('"')
-                except: pass
 
-        if title_elm and link_elm:
-            results.append({
-                "title": title_elm.text.strip(),
-                "link": link_elm['href'],
-                "img": img_src,
-                "source": "Otakomu"
-            })
-    return results
+def fetch_items(site):
+    response = SESSION.get(site['url'], timeout=20)
+    response.raise_for_status()
+    if 'rss' in site:
+        items = parse_rss(response.content, site['rss'])
+    else:
+        response.encoding = response.apparent_encoding
+        items = site['parser'](BeautifulSoup(response.text, 'html.parser'))
 
-def parse_mantanweb(soup):
-    results = []
-    articles = soup.select('li.article-list_horizontal__item')
-    for item in articles[:5]:
-        link_elm = item.find('a', class_='article-list_horizontal__unit')
-        title_elm = item.find('h3', class_='article-list_horizontal__title')
-        img_elm = item.find('img')
-        if title_elm and link_elm:
-            img_src = img_elm.get('data-src') or img_elm.get('src') if img_elm else ""
-            results.append({
-                "title": title_elm.text.strip(),
-                "link": "https://mantan-web.jp" + link_elm.get('href'),
-                "img": img_src,
-                "source": "MANTANWEB"
-            })
-    return results
+    for item in items:
+        item['link'] = urljoin(site['url'], item['link'] or "")
+        img = item.get('img') or ""
+        item['img'] = urljoin(site['url'], img) if img and not img.startswith('data:') else ""
+        item['lang'] = site['lang']
+        item['site'] = site
+    return [i for i in items if i['link'].startswith('http')]
 
-def parse_esuteru(soup):
-    results = []
-    articles = soup.select('article')
-    for item in articles[:5]:
-        title_elm = None
-        link_elm = None
-        img_src = ""
-        img_container = None
-        classes = item.get('class', [])
-        
-        if 'articleTop' in classes:
-            title_elm = item.find('h2', class_='articleTop-title')
-            link_elm = item.find('a', class_='articleTop-link')
-            img_container = item.find('div', class_='articleTop-img')
-        elif 'articleBottom' in classes:
-            title_elm = item.find('h2', class_='articleBottom-title')
-            if title_elm: link_elm = title_elm.find('a')
-            img_container = item.find('a', class_='articleBottom-img-link')
 
-        if img_container and img_container.has_attr('style') and 'url(' in img_container['style']:
-            try: img_src = img_container['style'].split('url(')[1].split(')')[0].strip("'").strip('"')
-            except: pass
+def enrich(item):
+    """Ambil ringkasan & gambar resolusi penuh dari meta og: artikel (sekali per berita)."""
+    if item.get('_enriched'):
+        return item
+    item['_enriched'] = True
+    try:
+        response = SESSION.get(item['link'], timeout=12)
+        response.encoding = response.apparent_encoding
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-        if title_elm and link_elm:
-            results.append({
-                "title": title_elm.text.strip(),
-                "link": link_elm['href'],
-                "img": img_src,
-                "source": "Hachima Kiko"
-            })
-    return results
+        def meta(*names):
+            for name in names:
+                tag = soup.find('meta', attrs={'property': name}) or soup.find('meta', attrs={'name': name})
+                if tag and tag.get('content'):
+                    return tag['content'].strip()
+            return ""
 
-def parse_famitsu(soup):
-    results = []
-    articles = soup.find_all('div', class_=lambda x: x and 'cardContainer' in x)
-    for item in articles[:5]:
-        try:
-            title_elm = item.find('p', class_=lambda x: x and 'cardTitle' in x)
-            link_elm = item.find('a')
-            img_elm = item.find('img')
-            
-            if title_elm and link_elm:
-                link = link_elm.get('href')
-                if link and not link.startswith('http'): link = "https://www.famitsu.com" + link
-                img_src = img_elm.get('src') if img_elm else ""
-                results.append({
-                    "title": title_elm.text.strip(),
-                    "link": link,
-                    "img": img_src,
-                    "source": "Famitsu"
-                })
-        except: continue
-    return results
+        og_image = meta('og:image', 'twitter:image')
+        if og_image.startswith(('http', '//', '/')) and ' ' not in og_image:
+            item['img'] = urljoin(item['link'], og_image)
+        if not item.get('summary'):
+            item['summary'] = meta('og:description', 'description', 'twitter:description')
+    except Exception as e:
+        print(f"    (meta artikel tidak terbaca: {e})")
+    return item
 
-def parse_animeanime(soup):
-    results = []
-    articles = soup.find_all('section', class_=lambda x: x and 'item--cate-news' in x)
-    for item in articles[:5]:
-        try:
-            link_elm = item.find('a', class_='link')
-            title_elm = item.find('h2', class_='title')
-            img_elm = item.find('img', class_='figure')
-            
-            if title_elm and link_elm:
-                link = link_elm.get('href')
-                if link and not link.startswith('http'): link = "https://animeanime.jp" + link
-                img_src = img_elm.get('src') if img_elm else ""
-                if img_src and not img_src.startswith('http'): img_src = "https://animeanime.jp" + img_src
-                
-                results.append({
-                    "title": title_elm.text.strip(),
-                    "link": link,
-                    "img": img_src,
-                    "source": "Anime!Anime!"
-                })
-        except: continue
-    return results
 
-def parse_kaori(soup):
-    results = []
-    articles = soup.select('.td_module_wrap')
-    for item in articles[:5]:
-        try:
-            title_elm = item.find('h3', class_='entry-title')
-            if not title_elm: continue
-            link_elm = title_elm.find('a')
-            if not link_elm: continue
-            
-            img_src = ""
-            thumb_div = item.find('div', class_='td-module-thumb')
-            if thumb_div:
-                img_tag = thumb_div.find('img')
-                if img_tag:
-                    img_src = img_tag.get('data-img-url') or img_tag.get('src')
-                if not img_src:
-                    span_bg = thumb_div.find('span', class_='entry-thumb')
-                    if span_bg and span_bg.has_attr('style') and "url(" in span_bg['style']:
-                        try: img_src = span_bg['style'].split("url('")[1].split("')")[0]
-                        except: pass
-            
-            results.append({
-                "title": link_elm.get('title') or link_elm.text.strip(),
-                "link": link_elm['href'],
-                "img": img_src,
-                "source": "KAORI Nusantara"
-            })
-        except: continue
-    return results
+def send_webhook(url, embed, username=None):
+    if DRY_RUN:
+        print(f"    [DRY-RUN] {embed.title}")
+        return True
+    webhook = DiscordWebhook(url=url, username=username, rate_limit_retry=True, timeout=20)
+    webhook.add_embed(embed)
+    try:
+        response = webhook.execute()
+        if response.status_code == 400 and webhook.embeds[0].get('image'):
+            print("    Gagal kirim (400). Mencoba kirim tanpa gambar...")
+            webhook.embeds[0].pop('image')
+            response = webhook.execute()
+        if response.ok:
+            return True
+        print(f"    Webhook gagal ({response.status_code}): {response.text[:200]}")
+    except Exception as err:
+        print(f"    Webhook error: {err}")
+    return False
 
-def parse_dengeki(soup):
-    results = []
-    articles = soup.find_all('li', class_=lambda x: x and ('ArticleList_listItem' in x or 'TopicList_listItem' in x or 'NewsList_listItem' in x))
-    for item in articles[:5]:
-        try:
-            link_elm = item.find('a')
-            title_elm = item.find('p', class_=lambda x: x and ('ArticleCard_title' in x or 'TopicCard_title' in x))
-            
-            if not title_elm:
-                title_elm = item.find('p', class_=lambda x: x and 'title' in x.lower())
 
-            img_elm = item.find('img')
-            
-            if title_elm and link_elm:
-                link = link_elm.get('href')
-                if link and not link.startswith('http'): link = "https://dengekionline.com" + link
-                img_src = img_elm.get('src') if img_elm else ""
-                
-                results.append({
-                    "title": title_elm.text.strip(),
-                    "link": link,
-                    "img": img_src,
-                    "source": "Dengeki Online"
-                })
-        except: continue
-    return results
+# --- TAMPILAN EMBED ---
+def build_news_embed(item):
+    site = item['site']
+    home = site.get('home', site['url'])
+    icon = favicon(home)
 
-def parse_vtub0(soup):
-    results = []
-    articles = soup.select('article.post-list')
-    
-    for item in articles[:5]:
-        try:
-            
-            link_elm = item.find('a')
-            if not link_elm: continue
-            link = link_elm.get('href')
+    translate_item(item)
+    title, summary = item['title_id'], item['summary_id']
 
-            title_elm = item.find(class_='entry-title')
-            if not title_elm: continue
-            title = title_elm.text.strip()
+    parts = []
+    if summary:
+        parts.append(clip(summary, 600))
+    if title != item['title']:
+        parts.append(f"> 📝 *{clip(item['title'], 250)}*")
+    parts.append(f"👉 **[Baca selengkapnya]({item['link']})**")
 
-            img_elm = item.find('img')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-            
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "V-Tuber ZERO"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing V-Tuber ZERO: {e}")
-            continue
+    embed = DiscordEmbed(
+        title=clip(f"{site.get('emoji', '📰')} {title}", 256),
+        description="\n\n".join(parts),
+        color=site.get('color', '03b2f8'),
+        url=item['link'],
+    )
+    embed.set_author(name=item['source'], url=home, icon_url=icon)
+    embed.set_footer(text=f"{item['source']} • Bot Berita", icon_url=icon)
+    embed.set_timestamp()
+    if item.get('img'):
+        embed.set_image(url=item['img'])
+    return embed
 
-    return results
 
-def parse_moguravr(soup):
-    results = []
-    
-    articles = soup.select('a.mg-hover-card-link')
-    
-    for item in articles[:5]:
-        try:
-            
-            link = item.get('href')
-            if not link: continue
+def highlight(headline):
+    """Bagian [di dalam kurung siku] = highlight kuning di feed → tampilkan tebal di Discord."""
+    return headline.replace('[', '**').replace(']', '**')
 
-            title_elm = item.find('h3', class_='card-title')
-            if not title_elm: continue
-            title = title_elm.text.strip()
 
-            img_elm = item.find('img', class_='mg-img-cover')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-            
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "Mogura VR"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing Mogura VR: {e}")
-            continue
+def build_areaanime_embed(item, info):
+    translate_item(item)
+    title_id, summary = item['title_id'], item['summary_id']
+    score = info['score']
 
-    return results
+    lines = []
+    if info.get('headline'):
+        lines.append(f"**✍️ Saran judul feed**\n`{info['tag']}`\n> {highlight(info['headline'])}")
+    if summary:
+        lines.append(f"**📰 Ringkasan**\n{clip(summary, 600)}")
+    if title_id != item['title']:
+        lines.append(f"> 📝 *{clip(item['title'], 250)}*")
+    lines.append(f"👉 **[Buka sumber berita]({item['link']})**")
 
-def parse_yahoo_jp(soup):
-    results = []
-    articles = soup.find_all('div', class_=lambda x: x and 'sc-naer8t-2' in x)
+    color = "ff1744" if score >= 9 else "ff6d00" if score >= 8 else "ffc400"
+    embed = DiscordEmbed(
+        title=clip(f"🔥 {title_id}", 256),
+        description="\n\n".join(lines),
+        color=color,
+        url=item['link'],
+    )
+    embed.set_author(name=f"Areaanime Radar • Potensi viral {score:g}/10", icon_url=favicon(item['link']))
+    embed.add_embed_field(name="💡 Kenapa berpotensi viral", value=clip(info['reason'], 1024), inline=False)
+    embed.add_embed_field(name="📡 Diliput", value=f"{item.get('_coverage', 1)} media", inline=True)
+    embed.add_embed_field(name="🏷️ Sumber", value=item['source'], inline=True)
+    embed.set_footer(text=f"Dikurasi otomatis ({info['mode']}) • Bot Berita")
+    embed.set_timestamp()
+    if item.get('img'):
+        embed.set_image(url=item['img'])
+    return embed
 
-    for item in articles[:5]:
-        try:
-            link_elm = item.find('a')
-            if not link_elm: continue
-            
-            link = link_elm.get('href')
-            title = link_elm.get('aria-label')
-            
-            if not title:
-                sibling = item.find_next_sibling('div')
-                if sibling:
-                    title_text = sibling.find('p', class_=lambda x: x and 'sc-naer8t-3' in x)
-                    if title_text: title = title_text.text.strip()
-            
-            if not title: continue
-
-            img_elm = item.find('img')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-            
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "Yahoo! Japan News"
-            })
-            
-        except Exception as e:
-            print(f"Error parsing Yahoo JP: {e}")
-            continue
-
-    return results
-
-def parse_4gamer(soup):
-    results = []
-    articles = soup.select('div.V2_article_container')
-
-    for item in articles[:5]:
-        try:
-            h2_elm = item.find('h2')
-            if not h2_elm: continue
-            
-            link_elm = h2_elm.find('a')
-            if not link_elm: continue
-
-            title = link_elm.text.strip()
-            link = link_elm.get('href')
-            
-            if link and not link.startswith('http'):
-                link = "https://www.4gamer.net" + link
-
-            img_elm = item.find('img', class_='img_right_top')
-            img_src = ""
-            if img_elm:
-                img_src = img_elm.get('src')
-                # Fix Relative Image
-                if img_src and not img_src.startswith('http'):
-                    img_src = "https://www.4gamer.net" + img_src
-
-            results.append({
-                "title": title,
-                "link": link,
-                "img": img_src,
-                "source": "4Gamer.net"
-            })
-
-        except Exception as e:
-            print(f"Error parsing 4Gamer: {e}")
-            continue
-
-    return results
-
-# --- DAFTAR WEBSITE & CONFIG TAMPILAN ---
-TARGETS = [
-    # 1. ORICON
-    {"url": "https://www.oricon.co.jp/category/anime/", "lang": "ja", "parser": parse_oricon, "webhook": WH_ORICON, "color": "e60033", "emoji": "🇯🇵"},
-
-    # 2. INDO NEWS
-    {"url": "https://gamerwk.com/", "lang": "id", "parser": parse_gamerwk, "webhook": WH_INDO, "color": "ff6600", "emoji": "🇮🇩"},
-    {"url": "https://www.kaorinusantara.or.id/rubrik/aktual/anime", "lang": "id", "parser": parse_kaori, "webhook": WH_INDO, "color": "ff9900", "emoji": "🇮🇩"},
-
-    # 3. GAME & TECH
-    {"url": "https://www.famitsu.com/category/pc-game/page/1", "lang": "ja", "parser": parse_famitsu, "webhook": WH_GAME, "color": "00ff00", "emoji": "🎮"},
-    {"url": "https://gamebrott.com/", "lang": "id", "parser": parse_gamebrott, "webhook": WH_GAME, "color": "e15f41", "emoji": "🎮"},
-    {"url": "https://www.4gamer.net/", "lang": "ja", "parser": parse_4gamer, "webhook": WH_GAME, "color": "003b86", "emoji": "🎮"},
-
-    # 4. GOSIP/BUZZ
-    {"url": "http://yaraon-blog.com/", "lang": "ja", "parser": parse_yaraon, "webhook": WH_BUZZ, "color": "ffd700", "emoji": "🔥"},
-    {"url": "http://otakomu.jp/", "lang": "ja", "parser": parse_otakomu, "webhook": WH_BUZZ, "color": "ffd700", "emoji": "🔥"},
-    {"url": "http://blog.esuteru.com/archives/cat_6292.html", "lang": "ja", "parser": parse_esuteru, "webhook": WH_BUZZ, "color": "ffd700", "emoji": "🔥"},
-
-    # 5. GENERAL ANIME
-    {"url": "https://natalie.mu/comic", "lang": "ja", "parser": parse_natalie_comic, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
-    {"url": "https://mantan-web.jp/anime/", "lang": "ja", "parser": parse_mantanweb, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
-    {"url": "https://somoskudasai.org/", "lang": "es", "parser": parse_somoskudasai, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "🇪🇸"},
-    {"url": "https://www.famitsu.com/category/anime/page/1", "lang": "ja", "parser": parse_famitsu, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
-    {"url": "https://animeanime.jp/category/news/latest/latest/", "lang": "ja", "parser": parse_animeanime, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
-    {"url": "https://dengekionline.com/category/anime/page/1", "lang": "ja", "parser": parse_dengeki, "webhook": WH_GENERAL, "color": "0099ff", "emoji": "📺"},
-    {"url": "https://www.animatetimes.com/anime/", "lang": "ja", "parser": parse_animatetimes, "webhook": WH_GENERAL, "color": "003c86", "emoji": "🇯🇵"},
-
-    # 6. LIGHT NOVEL & Manga
-    {"url": "https://animeanime.jp/category/news/novel/latest/", "lang": "ja", "parser": parse_animeanime, "webhook": WH_LN, "color": "9900cc", "emoji": "📚"},
-    {"url": "http://otakomu.jp/archives/cat_325595.html", "lang": "ja", "parser": parse_otakomu, "webhook": WH_LN, "color": "9900cc", "emoji": "📚"},
-    {"url": "https://animeanime.jp/category/news/manga/latest/", "lang": "ja", "parser": parse_animeanime, "webhook": WH_LN, "color": "9900cc", "emoji": "📚"},
-
-    # 7. VTUBER
-    {"url": "https://dengekionline.com/special/vtuber", "lang": "ja", "parser": parse_dengeki, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"}, 
-    {"url": "https://vtub0.com/", "lang": "ja", "parser": parse_vtub0, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"},
-    {"url": "https://www.oricon.co.jp/news/tag/id/vtuber/", "lang": "ja", "parser": parse_oricon, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"},
-    {"url": "https://www.moguravr.com/category/virtual-youtuber/", "lang": "ja", "parser": parse_moguravr, "webhook": WH_VTUBER, "color": "00ced1", "emoji": "🤖"},
-
-    # 8. ANIME NEWS NETWORK (Official)
-    {"url": "https://www.animenewsnetwork.com/", "lang": "en", "parser": parse_ann, "webhook": WH_ANN, "color": "1c3c74", "emoji": "🇺🇸"},
-
-    # 9. CRUNCHYROLL (Official)
-    {"url": "https://www.crunchyroll.com/news", "lang": "en", "parser": parse_crunchyroll, "webhook": WH_CRUNCHYROLL, "color": "f47521", "emoji": "🟠"},
-
-    # 10. JAPAN GENERAL NEWS WH_JPGENERAL
-    {"url": "https://news.yahoo.co.jp/flash", "lang": "ja", "parser": parse_yahoo_jp, "webhook": WH_JPGENERAL, "color": "ff0033", "emoji": "🔴"},    
-]
 
 # --- MAIN LOOP ---
 def main():
-    print("Memulai pengecekan multi-website...")
+    print("Memulai pengecekan multi-website..." + (" (DRY-RUN)" if DRY_RUN else ""))
     history = load_history()
-    
+    sent = set(history["sent"])
+    all_items = []
+
+    # 1. Ambil berita & kirim ke channel kategori masing-masing
     for site in TARGETS:
-        if not site['webhook']:
+        webhook_url = os.getenv(f"DISCORD_WEBHOOK_{site['channel']}")
+        if not webhook_url and not WH_AREAANIME:
             print(f"Skipping {site['url']} (Webhook not set)")
             continue
 
         print(f"--> Mengecek: {site['url']}")
         try:
-            response = requests.get(site['url'], headers=HEADERS, timeout=15)
-            response.encoding = response.apparent_encoding
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            news_items = site['parser'](soup)
-            
-            if not news_items:
-                print("    Tidak ada berita ditemukan (Cek selector?)")
-            
-            for news in reversed(news_items):
-                if news['link'] in history:
-                    continue
-                
-                print(f"    [NEW] {news['source']}: {news['title'][:30]}...")
-                
-                translated_title = translate_text(news['title'], site['lang'])
-                
-                prefix_emoji = site.get('emoji', '📰')
-                clean_desc = news['title'][:250]
-                desc_with_link = f"{clean_desc}...\n\n👉 **[Baca Selengkapnya di Website]({news['link']})**"
-                
-                icon_url = ""
-                try:
-                    domain = site['url'].split('/')[2]
-                    icon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
-                except:
-                    pass
-                
-                # --- DISCORD EMBED ---
-                webhook = DiscordWebhook(url=site['webhook']) 
-                embed_color = site.get('color', '03b2f8')
-                
-                embed = DiscordEmbed(
-                    title=f"{prefix_emoji} {translated_title[:250]}",
-                    description=desc_with_link,
-                    color=embed_color
-                )
-
-                embed.set_author(name=news['source'], url=site['url'], icon_url=icon_url)
-                embed.set_url(news['link'])
-                embed.set_footer(text=f"Source: {news['source']} • Bot Berita", icon_url=icon_url)
-                embed.set_timestamp()
-                
-                if news['img'] and "base64" not in news['img'] and len(news['img']) > 10:
-                    embed.set_image(url=news['img'])
-                
-                webhook.add_embed(embed)
-                
-                try:
-                    response_webhook = webhook.execute()
-                    if response_webhook.status_code == 400:
-                        print(f"    Gagal kirim (400). Mencoba kirim tanpa gambar...")
-                        webhook.embeds[0].image = {} 
-                        webhook.execute()
-                except Exception as err:
-                    print(f"    Webhook error: {err}")
-                
-                history.append(news['link'])
-                time.sleep(2) 
-                
+            items = fetch_items(site)
         except Exception as e:
             print(f"    Error di {site['url']}: {e}")
-            
-    save_history(history)
+            continue
+        if not items:
+            print("    Tidak ada berita ditemukan (Cek selector?)")
+        all_items.extend(items)
+
+        if not webhook_url:
+            continue
+        for item in reversed(items):  # kirim dari yang paling lama supaya urutan di Discord benar
+            if item['link'] in sent:
+                continue
+            print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
+            if send_webhook(webhook_url, build_news_embed(enrich(item))):
+                sent.add(item['link'])
+                history["sent"].append(item['link'])
+            time.sleep(1.5)
+
+    # 2. Kurasi berita berpotensi viral untuk channel Areaanime
+    if WH_AREAANIME:
+        print("--> Kurasi Areaanime")
+        seen = set(history["areaanime_seen"])
+        candidates, links = [], set()
+        for item in all_items:
+            if item['link'] not in seen and item['link'] not in links:
+                links.add(item['link'])
+                candidates.append(item)
+
+        picks = curator.select(candidates, all_items, history["areaanime_posts"])
+        if not picks:
+            print(f"    Tidak ada berita yang cukup menarik dari {len(candidates)} kandidat.")
+        posted = set()
+        for item, info in picks:
+            print(f"    [AREAANIME {info['score']:g}/10] {item['source']}: {item['title'][:40]}...")
+            if send_webhook(WH_AREAANIME, build_areaanime_embed(enrich(item), info), username="Areaanime Radar"):
+                posted.add(item['link'])
+                history["areaanime_posts"].append({
+                    "link": item['link'], "key": info['key'], "title": item['title'],
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                })
+            time.sleep(1.5)
+
+        # Kandidat yang sudah dinilai tidak dinilai ulang (hemat token Claude),
+        # kecuali yang terpilih tapi gagal terkirim.
+        failed = {item['link'] for item, _ in picks} - posted
+        history["areaanime_seen"].extend(c['link'] for c in candidates if c['link'] not in failed)
+
+    if DRY_RUN:
+        print("DRY-RUN: history tidak disimpan.")
+    else:
+        save_history(history)
     print("Selesai pengecekan semua web.")
+
 
 if __name__ == "__main__":
     main()

@@ -58,25 +58,6 @@ class DeliveryTests(unittest.TestCase):
             self.assertFalse(main.send_webhook("https://example.com/webhook", DiscordEmbed(title="News")))
         sleep.assert_not_called()
 
-    def test_translation_has_timeout_cache_and_preserves_paragraphs(self):
-        main.google_translate.cache_clear()
-        with patch.object(main.requests, "get", return_value=response(
-                200, '<div class="result-container">Judul\n\nRingkasan</div>')) as get:
-            self.assertEqual(main.google_translate("News", "en", "id"), "Judul\n\nRingkasan")
-            main.google_translate("News", "en", "id")
-        self.assertEqual(get.call_count, 1)
-        self.assertEqual(get.call_args.kwargs["timeout"], (5, 10))
-        main.google_translate.cache_clear()
-
-    def test_translation_stops_after_three_failures(self):
-        with patch.object(main, "translate_failures", 0), \
-                patch.object(main, "google_translate", side_effect=requests.Timeout) as translate, \
-                patch.object(main.time, "sleep"):
-            for _ in range(5):
-                self.assertEqual(main.translate_text("News", "en"), "News")
-            self.assertEqual(translate.call_count, 6)
-
-
 class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
@@ -140,3 +121,38 @@ class PipelineTests(unittest.TestCase):
             main.main()
         send.assert_not_called()
         self.assertEqual(self.path.read_bytes(), before)
+
+    def test_missing_gemini_key_defers_foreign_news_without_marking_sent(self):
+        for item in self.items:
+            item['lang'] = 'ja'
+        with patch.object(main, 'TRANSLATOR', main.GeminiTranslator(api_key='')), \
+                patch.object(main, 'build_news_embed', side_effect=lambda item: main.translate_item(item)), \
+                patch.object(main, 'send_webhook') as send:
+            main.main()
+        send.assert_not_called()
+        self.assertEqual(history_store.load(self.path)['sent'], [])
+        self.assertNotIn('title_id', self.items[0])
+
+    def test_missing_key_keeps_selected_area_news_retryable(self):
+        self.items[0]['lang'] = 'ja'
+        info = {'score': 8, 'reason': 'Test', 'key': 'test', 'mode': 'heuristik'}
+        with patch.object(main, 'TRANSLATOR', main.GeminiTranslator(api_key='')), \
+                patch.object(main, 'WH_AREAANIME', 'areaanime'), \
+                patch.object(main.curator, 'select', return_value=[(self.items[0], info)]), \
+                patch.object(main, 'build_areaanime_embed', side_effect=lambda item, info: main.translate_item(item)), \
+                patch.object(main, 'build_news_embed', side_effect=lambda item: main.translate_item(item)), \
+                patch.object(main, 'send_webhook', return_value=True) as send:
+            main.main()
+        self.assertEqual([call.args[0] for call in send.call_args_list], ['category'])
+        data = history_store.load(self.path)
+        self.assertEqual(data['sent'], [self.items[1]['link']])
+        self.assertNotIn(self.items[0]['link'], data['areaanime_seen'])
+        self.assertEqual(data['areaanime_posts'], [])
+
+    def test_translated_item_is_reused_across_channels(self):
+        self.items[0]['lang'] = 'ja'
+        with patch.object(main.TRANSLATOR, 'translate', return_value=('Judul', 'Ringkasan')) as translate:
+            main.translate_item(self.items[0])
+            main.translate_item(self.items[0])
+        translate.assert_called_once()
+        self.assertEqual(self.items[0]['title_id'], 'Judul')

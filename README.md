@@ -11,6 +11,7 @@ Bot yang mengambil berita anime, manga, game, dan VTuber dari ±25 sumber (Jepan
 | `curator.py` | Kurasi berita berpotensi viral untuk channel Areaanime |
 | `history.json` | Memori berita yang sudah dikirim (di-commit otomatis oleh bot) |
 | `history_store.py` | Simpan history secara atomik dan gabungkan history saat Git rebase |
+| `translator.py` | Terjemahkan judul dan ringkasan menggunakan Gemini API |
 
 ## Channel & Secrets
 
@@ -29,13 +30,24 @@ Isi di **Settings → Secrets and variables → Actions** (atau di `.env` saat m
 | `DISCORD_WEBHOOK_CRUNCHYROLL` | Crunchyroll News |
 | `DISCORD_WEBHOOK_JP_NEWS` | Yahoo! Japan (di `.env` lokal namanya `DISCORD_WEBHOOK_JPGENERAL`) |
 | `DISCORD_WEBHOOK_AREAANIME` | Kurasi berita berpotensi viral untuk @Areaanime.id |
+| `GEMINI_API_KEY` | Terjemahan Gemini; wajib untuk mengirim berita berbahasa asing |
 | `ANTHROPIC_API_KEY` | *Opsional*: kurasi Areaanime dinilai Claude + saran judul feed |
 
 Channel yang webhook-nya kosong otomatis dilewati.
 
 Areaanime diproses setelah pengambilan sumber, sebelum pengiriman ke channel kategori. Setiap kiriman yang berhasil langsung disimpan ke history. Jika proses terhenti, GitHub Actions tetap mencoba menyimpan history dan mencadangkannya sebagai artifact selama 7 hari.
 
-Permintaan terjemahan punya timeout dan cache selama satu run. Setelah tiga kegagalan berturut-turut, terjemahan dihentikan untuk sisa run dan judul asli dipakai. Retry rate limit Discord dibatasi; kiriman yang gagal tetap bisa dicoba pada run berikutnya. History yang rusak menghentikan bot agar berita lama tidak terkirim ulang.
+Permintaan Gemini punya timeout dan cache selama satu run. Judul dan ringkasan diterjemahkan langsung ke Indonesia dalam satu permintaan JSON. Jika API key belum ada, kuota habis, atau terjemahan gagal, berita asing ditunda dan tidak dicatat sebagai terkirim. Berita Indonesia tetap berjalan. Setelah tiga kegagalan berturut-turut, permintaan Gemini dihentikan untuk sisa run. Retry rate limit Discord dibatasi; kiriman yang gagal tetap bisa dicoba pada run berikutnya. History yang rusak menghentikan bot agar berita lama tidak terkirim ulang.
+
+## Mengaktifkan terjemahan Gemini
+
+1. Buat API key di [Google AI Studio](https://aistudio.google.com/apikey).
+2. Tambahkan GitHub Actions secret `GEMINI_API_KEY` pada repository ini. Untuk pemakaian lokal, isi `.env` dengan pengaturan dari `.env.example`.
+3. Jalankan workflow secara manual untuk memeriksa hasil terjemahan. Centang `dry_run` untuk menguji tanpa kiriman Discord atau perubahan history.
+
+Model default adalah `gemini-3.5-flash-lite`. Model dapat diganti lewat environment lokal atau GitHub Actions **variable** `GEMINI_MODEL`. Ketersediaan model dan kuota gratis mengikuti akun Google; lihat [daftar model](https://ai.google.dev/gemini-api/docs/models) dan [harga resmi](https://ai.google.dev/gemini-api/docs/pricing).
+
+Jeda antarpermintaan default 6 detik untuk mengurangi rate limit. Bisa diubah lewat `GEMINI_REQUEST_INTERVAL` (environment lokal atau GitHub Actions variable). Key dikirim melalui header, dan pesan error di log tidak memuat key atau isi respons server. Integrasi menggunakan `requests`, tanpa tambahan SDK.
 
 ## Channel Areaanime
 

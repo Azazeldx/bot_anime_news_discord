@@ -9,6 +9,11 @@ on:
 
   # Tombol manual buat ngetes (biar ga nunggu jadwal)
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Uji tanpa mengirim Discord atau mengubah history
+        type: boolean
+        default: false
 
 permissions:
   contents: write # Izin supaya bot bisa update file history.json
@@ -58,9 +63,13 @@ jobs:
           DISCORD_WEBHOOK_JPGENERAL: ${{ secrets.DISCORD_WEBHOOK_JP_NEWS }}
           # Channel kurasi berita berpotensi viral
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
+          # Terjemahan judul dan ringkasan melalui Gemini.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+          GEMINI_REQUEST_INTERVAL: ${{ vars.GEMINI_REQUEST_INTERVAL || '6' }}
           # Opsional: kalau diisi, kurasi Areaanime dinilai Claude + dapat saran judul feed
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python -u main.py
+        run: python -u main.py ${{ inputs.dry_run && '--dry-run' || '' }}
         timeout-minutes: 22
 
       - name: Simpan History (Commit & Push)

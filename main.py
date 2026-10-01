@@ -2,7 +2,6 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from functools import lru_cache
 from urllib.parse import urljoin
 
 import requests
@@ -16,6 +15,7 @@ load_dotenv()
 
 import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
 import history_store  # noqa: E402
+from translator import GeminiTranslator, TranslationUnavailable  # noqa: E402
 from sources import TARGETS, parse_rss  # noqa: E402
 
 # --- KONFIGURASI ---
@@ -40,6 +40,7 @@ def make_session():
 
 
 SESSION = make_session()
+TRANSLATOR = GeminiTranslator()
 
 
 # --- FUNGSI HELPER ---
@@ -51,64 +52,19 @@ def save_history(history):
     history_store.save(HISTORY_FILE, history)
 
 
-@lru_cache(maxsize=512)
-def google_translate(text, source, target):
-    """Transport Google Translate dengan timeout; deep-translator tidak membatasinya."""
-    with requests.get("https://translate.google.com/m",
-                      params={"sl": source, "tl": target, "q": text},
-                      timeout=(5, 10)) as response:
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        result = soup.select_one("div.t0, div.result-container")
-        if result is None or not result.get_text().strip():
-            raise ValueError("Hasil Google Translate tidak ditemukan")
-        return result.get_text().strip()
-
-
-translate_failures = 0  # kalau Google terus menolak, berhenti mencoba supaya run tidak molor
-
-
-def translate_text(text, source_lang):
-    global translate_failures
-    if not text or source_lang == 'id' or translate_failures >= 3: return text
-    # Jp > En > Id (hasilnya lebih natural daripada Jp > Id langsung)
-    steps = [('ja', 'en'), ('en', 'id')] if source_lang == 'ja' else [(source_lang, 'id')]
-    for attempt in range(2):
-        try:
-            result = text
-            for src, dst in steps:
-                result = google_translate(result, src, dst)
-                time.sleep(0.3)  # batas Google Translate ±5 request/detik
-            translate_failures = 0
-            return result or text
-        except Exception as e:
-            if attempt == 0:
-                time.sleep(5)
-            else:
-                print(f"    Gagal translate ({type(e).__name__}); memakai judul asli.")
-    translate_failures += 1
-    if translate_failures == 3:
-        print("    Google Translate terus menolak, terjemahan dimatikan untuk sisa run ini.")
-    return text
-
-
 def translate_item(item):
-    """Terjemahkan judul + ringkasan dalam satu request, hasilnya disimpan di item supaya tidak diulang."""
+    """Terjemahkan judul + ringkasan dalam satu request, tanpa kirim judul asing saat gagal."""
     if 'title_id' in item:
         return item
+    if item.get('_translation_error'):
+        raise TranslationUnavailable(item['_translation_error'])
     title, summary = item['title'], clip(item.get('summary'), 350)
-    item['title_id'], item['summary_id'] = title, summary
-    if item['lang'] == 'id':
-        return item
-    if summary:
-        source_text = f"{title}\n\n{summary}"
-        joined = translate_text(source_text, item['lang'])
-        parts = joined.split("\n\n", 1)
-        if joined != source_text and len(parts) == 2:
-            item['title_id'], item['summary_id'] = parts[0].strip(), parts[1].strip()
-            return item
-    # Fallback: terjemahkan judul saja (ringkasan bahasa asing tanpa terjemahan tidak ditampilkan)
-    item['title_id'], item['summary_id'] = translate_text(title, item['lang']), ""
+    try:
+        title_id, summary_id = TRANSLATOR.translate(title, summary, item['lang'])
+    except TranslationUnavailable as error:
+        item['_translation_error'] = str(error)
+        raise
+    item['title_id'], item['summary_id'] = title_id, summary_id
     return item
 
 
@@ -267,6 +223,8 @@ def build_areaanime_embed(item, info):
 # --- MAIN LOOP ---
 def main():
     print("Memulai pengecekan multi-website..." + (" (DRY-RUN)" if DRY_RUN else ""))
+    if not TRANSLATOR.api_key:
+        print("GEMINI_API_KEY belum diatur; berita asing ditunda, berita Indonesia tetap dikirim.")
     history = load_history()
     sent = set(history["sent"])
     all_items = []
@@ -312,7 +270,12 @@ def main():
             save_history(history)
         for item, info in picks:
             print(f"    [AREAANIME {info['score']:g}/10] {item['source']}: {item['title'][:40]}...")
-            if send_webhook(WH_AREAANIME, build_areaanime_embed(enrich(item), info), username="Areaanime Radar"):
+            try:
+                embed = build_areaanime_embed(enrich(item), info)
+            except TranslationUnavailable as error:
+                print(f"    Areaanime ditunda: {error}")
+                continue
+            if send_webhook(WH_AREAANIME, embed, username="Areaanime Radar"):
                 history["areaanime_posts"].append({
                     "link": item['link'], "key": info['key'], "title": item['title'],
                     "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -328,7 +291,12 @@ def main():
             if item['link'] in sent:
                 continue
             print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
-            if send_webhook(webhook_url, build_news_embed(enrich(item))):
+            try:
+                embed = build_news_embed(enrich(item))
+            except TranslationUnavailable as error:
+                print(f"    Berita ditunda: {error}")
+                continue
+            if send_webhook(webhook_url, embed):
                 sent.add(item['link'])
                 history["sent"].append(item['link'])
                 if not DRY_RUN:

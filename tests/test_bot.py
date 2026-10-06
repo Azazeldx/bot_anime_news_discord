@@ -75,6 +75,7 @@ class PipelineTests(unittest.TestCase):
         self.items = [dict(title=title, link=f"https://example.com/{title}", lang="id",
                            source="Test", site=self.site) for title in ("new", "old")]
         self.stack.enter_context(patch.object(main, "fetch_items", return_value=self.items))
+        self.stack.enter_context(patch.object(main.x_trends, "fetch", return_value=[]))
         self.stack.enter_context(patch.object(main, "enrich", side_effect=lambda item: item))
         self.stack.enter_context(patch.object(main, "build_news_embed", return_value=DiscordEmbed(title="Test")))
 
@@ -92,7 +93,7 @@ class PipelineTests(unittest.TestCase):
     def test_areaanime_is_first_and_failed_pick_is_not_seen(self):
         info = {"score": 8, "reason": "Test", "key": "test", "mode": "heuristik"}
         with patch.object(main, "WH_AREAANIME", "areaanime"), \
-                patch.object(main.curator, "select", return_value=[(self.items[0], info)]), \
+                patch.object(main.curator, "select", return_value=([(self.items[0], info)], [])), \
                 patch.object(main, "build_areaanime_embed", return_value=DiscordEmbed(title="Area")), \
                 patch.object(main, "send_webhook", side_effect=[False, True, True]) as send:
             main.main()
@@ -104,7 +105,7 @@ class PipelineTests(unittest.TestCase):
     def test_successful_area_post_survives_later_interruption(self):
         info = {"score": 8, "reason": "Test", "key": "test", "mode": "heuristik"}
         with patch.object(main, "WH_AREAANIME", "areaanime"), \
-                patch.object(main.curator, "select", return_value=[(self.items[0], info)]), \
+                patch.object(main.curator, "select", return_value=([(self.items[0], info)], [])), \
                 patch.object(main, "build_areaanime_embed", return_value=DiscordEmbed(title="Area")), \
                 patch.object(main, "send_webhook", side_effect=[True, KeyboardInterrupt]):
             with self.assertRaises(KeyboardInterrupt):
@@ -112,6 +113,23 @@ class PipelineTests(unittest.TestCase):
         data = history_store.load(self.path)
         self.assertIn(self.items[0]["link"], data["areaanime_seen"])
         self.assertEqual(data["areaanime_posts"][0]["link"], self.items[0]["link"])
+
+    def test_x_watch_is_sent_and_remembered(self):
+        watch = [{"term": "#呪術廻戦", "region": "Jepang", "rank": 2, "tag": "JUJUTSU KAISEN",
+                  "reason": "Test", "key": "x:呪術廻戦"}]
+        with patch.object(main, "WH_AREAANIME", "areaanime"),                 patch.object(main.curator, "select", return_value=([], watch)),                 patch.object(main, "send_webhook", return_value=True) as send:
+            main.main()
+        self.assertEqual(send.call_args_list[0].args[0], "areaanime")
+        post = history_store.load(self.path)["areaanime_posts"][0]
+        self.assertEqual((post["key"], post["title"]), ("x:呪術廻戦", "#呪術廻戦"))
+        self.assertIn("x.com/search", post["link"])
+
+    def test_radar_source_is_curated_but_never_sent_to_a_category(self):
+        radar = dict(self.items[0], site={"url": "https://example.com", "channel": None})
+        with patch.object(main, "TARGETS", [{"url": "https://example.com", "channel": None}]),                 patch.object(main, "fetch_items", return_value=[radar]),                 patch.object(main, "WH_AREAANIME", "areaanime"),                 patch.object(main.curator, "select", return_value=([], [])) as select,                 patch.object(main, "send_webhook") as send:
+            main.main()
+        send.assert_not_called()
+        self.assertEqual(select.call_args.args[0], [radar])
 
     def test_dry_run_never_sends_or_changes_history(self):
         self.path.write_text(json.dumps(["existing"]), encoding="utf-8")
@@ -138,7 +156,7 @@ class PipelineTests(unittest.TestCase):
         info = {'score': 8, 'reason': 'Test', 'key': 'test', 'mode': 'heuristik'}
         with patch.object(main, 'TRANSLATOR', main.GeminiTranslator(api_key='')), \
                 patch.object(main, 'WH_AREAANIME', 'areaanime'), \
-                patch.object(main.curator, 'select', return_value=[(self.items[0], info)]), \
+                patch.object(main.curator, 'select', return_value=([(self.items[0], info)], [])), \
                 patch.object(main, 'build_areaanime_embed', side_effect=lambda item, info: main.translate_item(item)), \
                 patch.object(main, 'build_news_embed', side_effect=lambda item: main.translate_item(item)), \
                 patch.object(main, 'send_webhook', return_value=True) as send:

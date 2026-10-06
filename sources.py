@@ -4,7 +4,11 @@ Setiap parser menerima BeautifulSoup (atau bytes XML untuk RSS) dan mengembalika
 list dict: {"title", "link", "img", "source"}. Link/gambar relatif boleh dikembalikan
 apa adanya, main.py yang akan menjadikannya absolut.
 """
+import os
 import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from html import unescape
 
 from bs4 import BeautifulSoup
 from defusedxml.ElementTree import fromstring as parse_xml  # aman dari XML bomb / XXE
@@ -316,37 +320,6 @@ def parse_animeanime(soup):
         except: continue
     return results
 
-def parse_kaori(soup):
-    results = []
-    articles = soup.select('.td_module_wrap')
-    for item in articles[:5]:
-        try:
-            title_elm = item.find('h3', class_='entry-title')
-            if not title_elm: continue
-            link_elm = title_elm.find('a')
-            if not link_elm: continue
-            
-            img_src = ""
-            thumb_div = item.find('div', class_='td-module-thumb')
-            if thumb_div:
-                img_tag = thumb_div.find('img')
-                if img_tag:
-                    img_src = img_tag.get('data-img-url') or img_tag.get('src')
-                if not img_src:
-                    span_bg = thumb_div.find('span', class_='entry-thumb')
-                    if span_bg and span_bg.has_attr('style') and "url(" in span_bg['style']:
-                        try: img_src = span_bg['style'].split("url('")[1].split("')")[0]
-                        except: pass
-            
-            results.append({
-                "title": link_elm.get('title') or link_elm.text.strip(),
-                "link": link_elm['href'],
-                "img": img_src,
-                "source": "KAORI Nusantara"
-            })
-        except: continue
-    return results
-
 def parse_vtub0(soup):
     results = []
     articles = soup.select('article.post-list')
@@ -480,16 +453,30 @@ def parse_dengeki(soup):
 def _strip_html(text):
     return re.sub(r'\s+', ' ', BeautifulSoup(text or '', 'html.parser').get_text(' ')).strip()
 
-def parse_rss(content, source):
-    """Parser generik RSS 2.0 (lebih awet daripada scraping HTML)."""
+def _parse_date(text):
+    """Tanggal RSS (RFC 822) atau Atom/RDF (ISO 8601) -> datetime UTC, None kalau tidak terbaca."""
+    try:
+        date = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        try:
+            date = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except (AttributeError, ValueError):
+            return None
+    return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+
+def parse_rss(content, source, limit=5):
+    """Parser generik RSS 2.0, RSS 1.0 (RDF) dan Atom (lebih awet daripada scraping HTML)."""
     results = []
     root = parse_xml(content)
-    for item in list(root.iter('item'))[:5]:
+    entries = [e for e in root.iter() if e.tag.split('}')[-1] in ('item', 'entry')]
+    for item in entries[:limit]:
         fields, img = {}, ""
         for child in item:
-            tag = child.tag.split('}')[-1]  # buang namespace (media:, content:)
+            tag = child.tag.split('}')[-1]  # buang namespace (media:, content:, dc:)
             if child.get('url') and tag in ('thumbnail', 'content', 'enclosure'):
                 img = img or child.get('url')
+            elif tag == 'link' and child.get('href'):  # Atom
+                fields.setdefault('link', child.get('href'))
             elif tag == 'image' and child.text:
                 img = img or child.text.strip()
             elif child.text:
@@ -497,15 +484,18 @@ def parse_rss(content, source):
 
         if not fields.get('title') or not fields.get('link'): continue
         if not img:
-            match = re.search(r'<img[^>]+src="([^"]+)"', fields.get('encoded', '') + fields.get('description', ''))
-            img = match.group(1) if match else ""
+            html = fields.get('encoded', '') + fields.get('description', '') + fields.get('content', '')
+            match = re.search(r'<img[^>]+src="([^"]+)"', html)
+            img = unescape(match.group(1)) if match else ""
 
         results.append({
-            "title": fields['title'],
+            "title": unescape(fields['title']),
             "link": fields['link'],
             "img": img,
             "source": source,
-            "summary": _strip_html(fields.get('description'))[:500],
+            "summary": _strip_html(fields.get('description') or fields.get('summary'))[:500],
+            "published": _parse_date(fields.get('pubDate') or fields.get('published')
+                                     or fields.get('updated') or fields.get('date')),
         })
     return results
 
@@ -516,8 +506,8 @@ TARGETS = [
     # 1. ORICON
     {"url": "https://www.oricon.co.jp/category/anime/", "lang": "ja", "parser": parse_oricon, "channel": "ORICON", "color": "e60033", "emoji": "🇯🇵"},
 
-    # 2. INDO NEWS
-    {"url": "https://www.kaorinusantara.or.id/rubrik/aktual/anime", "lang": "id", "parser": parse_kaori, "channel": "INDO", "color": "ff9900", "emoji": "🇮🇩"},
+    # 2. INDO NEWS - halaman HTML KAORI memblokir server GitHub (403), pakai RSS rubriknya
+    {"url": "https://www.kaorinusantara.or.id/rubrik/aktual/anime/feed", "lang": "id", "rss": "KAORI Nusantara", "channel": "INDO", "color": "ff9900", "emoji": "🇮🇩", "home": "https://www.kaorinusantara.or.id/"},
 
     # 3. GAME & TECH
     {"url": "https://www.famitsu.com/category/pc-game/page/1", "lang": "ja", "parser": parse_famitsu, "channel": "GAME", "color": "00ff00", "emoji": "🎮"},
@@ -558,6 +548,32 @@ TARGETS = [
     {"url": "https://news.yahoo.co.jp/rss/topics/top-picks.xml", "lang": "ja", "rss": "Yahoo! Japan News", "channel": "JPGENERAL", "color": "ff0033", "emoji": "🔴", "home": "https://news.yahoo.co.jp/"},
     {"url": "https://news.yahoo.co.jp/rss/categories/entertainment.xml", "lang": "ja", "rss": "Yahoo! Japan Entame", "channel": "JPGENERAL", "color": "ff0033", "emoji": "🔴", "home": "https://news.yahoo.co.jp/categories/entertainment"},
 ]
+
+# Sumber khusus radar Areaanime ("channel": None): ikut dinilai & menambah hitungan liputan
+# lintas media, tapi tidak dikirim ke channel kategori mana pun.
+RADAR = [
+    {"url": "https://animecorner.me/feed/", "lang": "en", "rss": "Anime Corner", "home": "https://animecorner.me/"},
+    {"url": "https://myanimelist.net/rss/news.xml", "lang": "en", "rss": "MyAnimeList", "home": "https://myanimelist.net/news"},
+    {"url": "https://www.reddit.com/r/anime/search.rss?q=flair_name%3A%22News%22&restrict_sr=1&sort=new", "lang": "en", "rss": "Reddit r/anime", "home": "https://www.reddit.com/r/anime/"},
+    {"url": "https://animeanime.jp/rss/index.rdf", "lang": "ja", "rss": "Anime!Anime!", "home": "https://animeanime.jp/"},
+    {"url": "https://automaton-media.com/feed/", "lang": "ja", "rss": "AUTOMATON", "home": "https://automaton-media.com/"},
+    {"url": "https://kincir.com/feed/", "lang": "id", "rss": "Kincir", "home": "https://kincir.com/"},
+]
+
+# Akun X (opsional). X tidak punya RSS/API gratis, jadi isi env X_RSS_URL dengan bridge RSS
+# milik sendiri, mis. RSSHub: https://rsshub.domainmu.com/twitter/user/{account}
+# Daftar akun bisa diganti lewat env X_ACCOUNTS="akun:bahasa,akun:bahasa".
+X_ACCOUNTS = os.getenv("X_ACCOUNTS") or (
+    "MangaMoguraRE:en,animecorner_ac:en,AniTrendz:en,anime_natalie:ja,comic_natalie:ja,animatetimes:ja")
+X_RSS_URL = os.getenv("X_RSS_URL", "")
+if "{account}" in X_RSS_URL:
+    for entry in X_ACCOUNTS.split(","):
+        account, _, lang = entry.strip().partition(":")
+        if account:
+            RADAR.append({"url": X_RSS_URL.format(account=account), "lang": lang or "en",
+                          "rss": f"X @{account}", "home": f"https://x.com/{account}"})
+
+TARGETS += [{**site, "channel": None, "limit": 10} for site in RADAR]
 
 # Dihapus karena memblokir bot (Cloudflare / human verification), juga dari server GitHub:
 #   - https://gamerwk.com/        (403 "Just a moment...")

@@ -67,8 +67,12 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
           GEMINI_REQUEST_INTERVAL: ${{ vars.GEMINI_REQUEST_INTERVAL || '6' }}
-          # Opsional: kalau diisi, kurasi Areaanime dinilai Claude + dapat saran judul feed
+          # Kurasi Areaanime dinilai Gemini (pakai GEMINI_API_KEY di atas); Claude dipakai kalau key ini diisi
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AREAANIME_GEMINI_MODEL: ${{ vars.AREAANIME_GEMINI_MODEL }}
+          # Opsional: bridge RSS akun X milik sendiri, mis. https://rsshub.domainmu.com/twitter/user/{account}
+          X_RSS_URL: ${{ secrets.X_RSS_URL }}
+          X_ACCOUNTS: ${{ vars.X_ACCOUNTS }}
         run: python -u main.py ${{ inputs.dry_run && '--dry-run' || '' }}
         timeout-minutes: 22
 

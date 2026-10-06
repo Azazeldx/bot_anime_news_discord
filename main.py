@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,6 +15,7 @@ load_dotenv()
 
 import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
 import history_store  # noqa: E402
+import x_trends  # noqa: E402
 from translator import GeminiTranslator, TranslationUnavailable  # noqa: E402
 from sources import TARGETS, parse_rss  # noqa: E402
 
@@ -81,7 +82,7 @@ def fetch_items(site):
     response = SESSION.get(site['url'], timeout=20)
     response.raise_for_status()
     if 'rss' in site:
-        items = parse_rss(response.content, site['rss'])
+        items = parse_rss(response.content, site['rss'], site.get('limit', 5))
     else:
         response.encoding = response.apparent_encoding
         items = site['parser'](BeautifulSoup(response.text, 'html.parser'))
@@ -213,11 +214,41 @@ def build_areaanime_embed(item, info):
     embed.add_embed_field(name="💡 Kenapa berpotensi viral", value=clip(info['reason'], 1024), inline=False)
     embed.add_embed_field(name="📡 Diliput", value=f"{item.get('_coverage', 1)} media", inline=True)
     embed.add_embed_field(name="🏷️ Sumber", value=item['source'], inline=True)
+    if info.get('x'):
+        trends = ", ".join(f"[{t['term']}]({x_search(t['term'])}) ({t['region']} #{t['rank']})" for t in info['x'])
+        embed.add_embed_field(name="🐦 Trending di X", value=clip(trends, 1024), inline=False)
     embed.set_footer(text=f"Dikurasi otomatis ({info['mode']}) • Bot Berita")
     embed.set_timestamp()
     if item.get('img'):
         embed.set_image(url=item['img'])
     return embed
+
+
+def x_search(term):
+    return f"https://x.com/search?q={quote(term)}"
+
+
+def build_x_watch_embed(watch):
+    lines = [f"**[{w['term']}]({x_search(w['term'])})** · X {w['region']} #{w['rank']}\n`{w['tag']}` {w['reason']}"
+             for w in watch]
+    embed = DiscordEmbed(
+        title="📈 Lagi trending di X, belum ada beritanya",
+        description=clip("\n\n".join(lines), 4000),
+        color="1d9bf0",
+    )
+    embed.set_author(name="Areaanime Radar • Trending X")
+    embed.set_footer(text="Cek dulu konteksnya di X sebelum diposting • Bot Berita")
+    embed.set_timestamp()
+    return embed
+
+
+def record_area_post(history, link, key, title):
+    history["areaanime_posts"].append({
+        "link": link, "key": key, "title": title,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+    if not DRY_RUN:
+        save_history(history)
 
 
 # --- MAIN LOOP ---
@@ -232,7 +263,8 @@ def main():
 
     # 1. Ambil semua sumber dahulu, supaya Areaanime tidak menunggu seluruh kiriman kategori.
     for site in TARGETS:
-        webhook_url = os.getenv(f"DISCORD_WEBHOOK_{site['channel']}")
+        # Sumber radar (channel None) hanya dipakai kurasi Areaanime
+        webhook_url = os.getenv(f"DISCORD_WEBHOOK_{site['channel']}") if site['channel'] else None
         if not webhook_url and not WH_AREAANIME:
             print(f"Skipping {site['url']} (Webhook not set)")
             continue
@@ -259,7 +291,9 @@ def main():
                 links.add(item['link'])
                 candidates.append(item)
 
-        picks = curator.select(candidates, all_items, history["areaanime_posts"])
+        trends = x_trends.fetch(SESSION)
+        print(f"    {len(trends)} topik trending X terbaca")
+        picks, watch = curator.select(candidates, all_items, history["areaanime_posts"], trends)
         if not picks:
             print(f"    Tidak ada berita yang cukup menarik dari {len(candidates)} kandidat.")
         # Kandidat yang tidak dipilih sudah selesai dinilai. Pilihan tetap bisa dicoba ulang
@@ -276,13 +310,15 @@ def main():
                 print(f"    Areaanime ditunda: {error}")
                 continue
             if send_webhook(WH_AREAANIME, embed, username="Areaanime Radar"):
-                history["areaanime_posts"].append({
-                    "link": item['link'], "key": info['key'], "title": item['title'],
-                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                })
                 history["areaanime_seen"].append(item['link'])
-                if not DRY_RUN:
-                    save_history(history)
+                record_area_post(history, item['link'], info['key'], item['title'])
+            time.sleep(1.5)
+
+        if watch:
+            print(f"    [AREAANIME X] {', '.join(w['term'] for w in watch)}")
+            if send_webhook(WH_AREAANIME, build_x_watch_embed(watch), username="Areaanime Radar"):
+                for w in watch:
+                    record_area_post(history, x_search(w['term']), w['key'], w['term'])
             time.sleep(1.5)
 
     # 3. Kirim kategori dari yang paling lama, simpan segera setelah setiap kiriman berhasil.

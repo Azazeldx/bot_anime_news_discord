@@ -31,7 +31,8 @@ jobs:
     # RSSHub lokal untuk membaca akun X (login lewat cookie auth_token di secret TWITTER_AUTH_TOKEN).
     services:
       rsshub:
-        image: diygod/rsshub:latest
+        # Dipin ke digest (tag latest 2026-10-07) karena container ini menerima cookie X; perbarui dengan sengaja.
+        image: diygod/rsshub@sha256:7e2cbe4862d94480e927737cf52f5d8e0c60f14b79d2fc2f02ae6f698b51e75a
         ports:
           - 1200:1200
         env:

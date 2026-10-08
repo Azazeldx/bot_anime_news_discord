@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 from defusedxml.ElementTree import fromstring as parse_xml  # aman dari XML bomb / XXE
@@ -574,6 +575,17 @@ if "{account}" in X_RSS_URL:
         if account:
             RADAR.append({"url": X_RSS_URL.format(account=account), "lang": lang or "en",
                           "rss": f"X @{account}", "home": f"https://x.com/{account}"})
+
+# Radar lokal Indonesia: berita jejepangan dari media Indonesia (Google News) dan, kalau RSSHub
+# tersedia, postingan X berbahasa Indonesia yang sudah ramai. Cerita lokal paling sering viral.
+RADAR.append({"url": "https://news.google.com/rss/search?q=" + quote(
+                  "(anime OR wibu OR comifuro OR cosplay OR doraemon OR jejepangan) when:2d")
+              + "&hl=id&gl=ID&ceid=ID:id",
+              "lang": "id", "rss": "Google News ID", "home": "https://news.google.com/"})
+X_SEARCH = os.getenv("X_SEARCH") or "(anime OR wibu OR comifuro OR cosplayer OR jejepangan) lang:id min_faves:500"
+if "/twitter/" in X_RSS_URL and X_SEARCH.strip():
+    RADAR.append({"url": X_RSS_URL.split("/twitter/")[0] + "/twitter/keyword/" + quote(X_SEARCH, safe=""),
+                  "lang": "id", "rss": "X Indonesia", "home": "https://x.com/search"})
 
 # 11. TWITTER / X - postingan terbaru akun X pilihan (lihat x_accounts.py & README).
 # Akun yang sudah punya channel sendiri tidak diambil dua kali sebagai radar.

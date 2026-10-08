@@ -135,6 +135,7 @@ INDONESIA = [
     "indonesia", "インドネシア", "jakarta", "ジャカルタ", "hololive id", "ホロライブid",
     "kobo kanaeru", "こぼ・かなえる", "kaela kovalskia", "vestia zeta", "moona hoshinova",
     "ayunda risu", "airani iofifteen", "kureiji ollie", "anya melfissa", "pavolia reine",
+    "comifuro", "wibu", "dubber", "sulih suara", "pengisi suara", "angklung", "rcti",
 ]
 
 # Artikel rutin per episode (preview, sinopsis, thread diskusi) jarang layak jadi feed
@@ -148,7 +149,7 @@ EVENT_SIGNALS = [
     (3.0, "season/sekuel baru", ["第2期", "第3期", "第4期", "2期", "3期", "season 2", "season 3", "season 4", "2nd season", "3rd season", "続編", "sequel", "musim kedua", "lanjut ke"]),
     (3.0, "tamat / hiatus", ["最終回", "完結", "最終話", "final chapter", "ends", "休載", "hiatus", "tamat", "berakhir"]),
     (3.0, "live-action", ["実写化", "実写映画", "live-action", "live action"]),
-    (2.5, "kontroversi / drama", ["炎上", "騒動", "謝罪", "controversy", "契約終了", "解雇", "盗作", "plagiarism", "逮捕", "arrest", "kontroversi"]),
+    (2.5, "kontroversi / drama", ["炎上", "騒動", "謝罪", "controversy", "契約終了", "解雇", "盗作", "plagiarism", "逮捕", "arrest", "kontroversi", "dihujat", "dikecam", "ribut"]),
     (2.5, "graduation / pensiun", ["卒業", "引退", "活動終了", "graduation", "graduates", "retire", "retires", "retirement", "pensiun"]),
     (2.5, "comeback setelah lama", ["年ぶり", "復活", "再始動", "revival", "returns after", "kembali setelah"]),
     (2.0, "film / movie", ["劇場版", "映画化", "the movie", "anime film", "film anime"]),
@@ -294,7 +295,14 @@ SYSTEM_PROMPT = """Kamu adalah editor konten untuk akun Instagram @Areaanime.id:
 
 Tugasmu: dari daftar berita terbaru, pilih yang paling berpotensi viral kalau diposting sebagai feed Areaanime, beri skor, dan tulis saran judul feed. Selain itu, tandai topik trending X yang jelas berkaitan dengan dunia jejepangan tapi belum ada beritanya.
 
-## Apa yang biasanya viral untuk audiens ini
+## Prioritas utama: cerita jejepangan yang nyambung ke Indonesia
+Yang paling sering ramai di Areaanime justru bukan berita resmi Jepang, tapi cerita lokal yang bikin orang Indonesia ikut ngobrol. Contoh nyata yang ramai:
+- Drama komunitas lokal di X/medsos, mis. akun yang memancing ribut soal pengunjung Comifuro (162 ribu views, ribuan reaksi).
+- Kreasi unik orang Indonesia, mis. dosen meng-cover lagu Zoltraak dari Frieren pakai angklung.
+- Kabar duka/nostalgia dari dunia anime versi Indonesia, mis. meninggalnya pengisi suara Dorami/Dekisugi di Doraemon versi dubbing Indonesia.
+Cerita seperti ini layak skor 8-10 walau karyanya bukan pengumuman besar. Untuk drama/kontroversi, judul feed melaporkan keributannya dan reaksi orang, JANGAN mengulang ajakan kekerasan, hinaan, atau info yang bisa dipakai untuk menyerang orang/kelompok.
+
+## Apa lagi yang biasanya viral untuk audiens ini
 - Franchise yang dikenal luas di Indonesia (One Piece, Jujutsu Kaisen, Frieren, Kimetsu, Solo Leveling, Blue Lock, dll), atau karya yang sedang naik daun musim ini.
 - Kabar besar: adaptasi anime baru dari manga/LN populer, season lanjutan, movie, trailer/visual baru dari judul besar, tanggal tayang, live-action.
 - Momen emosional: tamat, hiatus, comeback setelah bertahun-tahun, kabar duka kreator/seiyuu, graduation VTuber besar.
@@ -311,7 +319,7 @@ Merch/figure/diskon/campaign, artikel rutin per episode (preview, sinopsis, "Epi
 - Kandidat dari Reddit r/anime adalah berita yang sedang dibahas komunitas internasional.
 
 ## Skor (1-10)
-- 9-10: hampir pasti meledak (contoh: tanggal tamat One Piece, trailer season baru Jujutsu Kaisen).
+- 9-10: hampir pasti meledak (contoh: tanggal tamat One Piece, trailer season baru Jujutsu Kaisen, pengisi suara Doraemon versi Indonesia meninggal, drama Comifuro yang ramai di X).
 - 7-8: kuat, layak diposting hari ini.
 - 5-6: lumayan tapi segmentasinya sempit.
 - 1-4: tidak cocok.

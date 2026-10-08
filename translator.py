@@ -89,8 +89,9 @@ class GeminiTranslator:
                 reason = f"Gemini {type(error).__name__}"
                 delay = 5
             except (ValueError, KeyError, IndexError, TypeError):
+                # Output terpotong/rusak sering hanya sesekali; coba sekali lagi tanpa jeda tambahan.
                 reason = "Respons terjemahan Gemini tidak valid atau terpotong"
-                break
+                delay = 0
             if attempt == 0:
                 time.sleep(delay)
         self.failures += 1

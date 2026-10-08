@@ -28,6 +28,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # RSSHub lokal untuk membaca akun X (login lewat cookie auth_token di secret TWITTER_AUTH_TOKEN).
+    services:
+      rsshub:
+        image: diygod/rsshub:latest
+        ports:
+          - 1200:1200
+        env:
+          NODE_ENV: production
+          CACHE_TYPE: memory
+          TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
+
     steps:
       - name: Ambil Kodingan (Checkout)
         id: checkout
@@ -47,6 +58,16 @@ jobs:
 
       - name: Uji Regresi
         run: python -m unittest discover -s tests -v
+
+      - name: Tunggu RSSHub Siap
+        # Kalau RSSHub tidak siap, bot tetap jalan; akun X hanya dilewati.
+        continue-on-error: true
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:1200/healthz > /dev/null && echo "RSSHub siap" && exit 0
+            sleep 2
+          done
+          echo "RSSHub belum siap setelah 60 detik"
 
       - name: Jalankan Bot
         env:
@@ -71,8 +92,8 @@ jobs:
           # Kurasi Areaanime dinilai Gemini (pakai GEMINI_API_KEY di atas); Claude dipakai kalau key ini diisi
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           AREAANIME_GEMINI_MODEL: ${{ vars.AREAANIME_GEMINI_MODEL }}
-          # Opsional: bridge RSS akun X milik sendiri, mis. https://rsshub.domainmu.com/twitter/user/{account}
-          X_RSS_URL: ${{ secrets.X_RSS_URL }}
+          # Bridge RSS akun X: RSSHub service di atas, kecuali secret X_RSS_URL diisi (RSSHub milik sendiri)
+          X_RSS_URL: ${{ secrets.X_RSS_URL || 'http://localhost:1200/twitter/user/{account}' }}
           X_ACCOUNTS: ${{ vars.X_ACCOUNTS }}
           # Opsional: ganti daftar akun channel Twitter & batas umur postingan
           X_TWITTER_ACCOUNTS: ${{ vars.X_TWITTER_ACCOUNTS }}

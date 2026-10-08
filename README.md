@@ -9,6 +9,7 @@ Bot yang mengambil berita anime, manga, game, dan VTuber dari ±30 sumber (Jepan
 | `main.py` | Alur utama: ambil berita, terjemahkan, kirim embed, simpan history |
 | `sources.py` | Daftar sumber (`TARGETS`) dan parser tiap website / RSS |
 | `curator.py` | Kurasi berita berpotensi viral untuk channel Areaanime |
+| `x_accounts.py` | Postingan terbaru akun X pilihan untuk channel Twitter |
 | `x_trends.py` | Trending X Jepang & Indonesia (trends24.in) untuk kurasi Areaanime |
 | `history.json` | Memori berita yang sudah dikirim (di-commit otomatis oleh bot) |
 | `history_store.py` | Simpan history secara atomik dan gabungkan history saat Git rebase |
@@ -30,6 +31,7 @@ Isi di **Settings → Secrets and variables → Actions** (atau di `.env` saat m
 | `DISCORD_WEBHOOK_ANN` | Anime News Network |
 | `DISCORD_WEBHOOK_CRUNCHYROLL` | Crunchyroll News |
 | `DISCORD_WEBHOOK_JP_NEWS` | Yahoo! Japan (di `.env` lokal namanya `DISCORD_WEBHOOK_JPGENERAL`) |
+| `DISCORD_WEBHOOK_TWITTER` | Postingan akun X (lihat Channel Twitter) |
 | `DISCORD_WEBHOOK_AREAANIME` | Kurasi berita berpotensi viral untuk @Areaanime.id |
 | `GEMINI_API_KEY` | Terjemahan Gemini; wajib untuk mengirim berita berbahasa asing |
 | `ANTHROPIC_API_KEY` | *Opsional*: kurasi Areaanime dinilai Claude (default memakai Gemini) |
@@ -50,6 +52,16 @@ Permintaan Gemini punya timeout dan cache selama satu run. Judul dan ringkasan d
 Model default adalah `gemini-3.5-flash-lite`. Model dapat diganti lewat environment lokal atau GitHub Actions **variable** `GEMINI_MODEL`. Ketersediaan model dan kuota gratis mengikuti akun Google; lihat [daftar model](https://ai.google.dev/gemini-api/docs/models) dan [harga resmi](https://ai.google.dev/gemini-api/docs/pricing).
 
 Jeda antarpermintaan default 6 detik untuk mengurangi rate limit. Bisa diubah lewat `GEMINI_REQUEST_INTERVAL` (environment lokal atau GitHub Actions variable). Key dikirim melalui header, dan pesan error di log tidak memuat key atau isi respons server. Integrasi menggunakan `requests`, tanpa tambahan SDK.
+
+## Channel Twitter
+
+Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTER`, diterjemahkan ke Bahasa Indonesia dengan teks asli tetap ditampilkan: SomosKudasai (Spanyol), animetrends, Dexerto, animetv_jp, MangaMoguraRE, WSJ_manga, AniNewsAndFacts, seiyuucorner, dan Seifukuanimehub.
+
+- Maksimal 5 postingan per akun per run, hanya yang berumur ≤ 24 jam (`X_MAX_AGE_HOURS`). Retweet dan balasan dilewati.
+- Daftar akun bisa diganti lewat variable `X_TWITTER_ACCOUNTS` (format `akun:bahasa,akun:bahasa`, mis. `Dexerto:en,SomosKudasai:es`).
+- Postingan ini juga ikut dinilai kurasi Areaanime.
+
+**Cara membaca X.** Kalau secret `X_RSS_URL` diisi (bridge RSS milik sendiri, lihat di bawah), bot memakainya. Kalau kosong, bot membaca timeline embed publik X (`syndication.twitter.com`) tanpa login. Jalur ini gratis tetapi tidak resmi: X bisa membatasi IP server GitHub atau mengembalikan timeline lama. Akun yang gagal dibaca hanya dilewati, bot tetap jalan. Jika log menampilkan `Error di https://x.com/...` terus-menerus, siapkan bridge RSS.
 
 ## Channel Areaanime
 

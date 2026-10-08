@@ -15,6 +15,7 @@ load_dotenv()
 
 import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
 import history_store  # noqa: E402
+import x_accounts  # noqa: E402
 import x_trends  # noqa: E402
 from translator import GeminiTranslator, TranslationUnavailable  # noqa: E402
 from sources import TARGETS, parse_rss  # noqa: E402
@@ -79,6 +80,12 @@ def favicon(url):
 
 
 def fetch_items(site):
+    if 'x' in site:
+        items = x_accounts.fetch(SESSION, site, parse_rss)
+        for item in items:
+            item.update(lang=site['lang'], site=site, _enriched=True)  # halaman x.com tidak bisa di-scrape
+        return items
+
     response = SESSION.get(site['url'], timeout=20)
     response.raise_for_status()
     if 'rss' in site:
@@ -155,7 +162,42 @@ def send_webhook(url, embed, username=None):
 
 
 # --- TAMPILAN EMBED ---
+def build_tweet_embed(item):
+    site = item['site']
+    translate_item(item)
+    text, original = item['title_id'], item['title']
+    handle = item['source'].removeprefix('X ')
+
+    # Baris pertama jadi judul embed, sisanya deskripsi (supaya teks tidak tampil dua kali).
+    first, _, rest = text.partition("\n")
+    if len(first) > 250:
+        first, rest = handle, text
+    parts = [clip(rest.strip(), 3000)] if rest.strip() else []
+    if text != original:
+        parts.append("> 📝 " + clip(original, 700).replace("\n", "\n> "))
+    parts.append(f"👉 **[Lihat postingan di X]({item['link']})**")
+
+    embed = DiscordEmbed(
+        title=clip(f"{site.get('emoji', '🐦')} {first or handle}", 256),
+        description="\n\n".join(parts),
+        color=site.get('color', '1d9bf0'),
+        url=item['link'],
+    )
+    embed.set_author(name=f"{item.get('x_name') or handle} ({handle})", url=site.get('home'),
+                     icon_url=item.get('x_avatar') or favicon("https://x.com/"))
+    embed.set_footer(text="X (Twitter) • Bot Berita", icon_url=favicon("https://x.com/"))
+    if item.get('published'):
+        embed.set_timestamp(item['published'].timestamp())
+    else:
+        embed.set_timestamp()
+    if item.get('img'):
+        embed.set_image(url=item['img'])
+    return embed
+
+
 def build_news_embed(item):
+    if 'x' in item['site']:
+        return build_tweet_embed(item)
     site = item['site']
     home = site.get('home', site['url'])
     icon = favicon(home)

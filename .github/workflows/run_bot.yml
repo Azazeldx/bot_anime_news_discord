@@ -61,6 +61,7 @@ jobs:
           DISCORD_WEBHOOK_ANN: ${{ secrets.DISCORD_WEBHOOK_ANN }}
           DISCORD_WEBHOOK_CRUNCHYROLL: ${{ secrets.DISCORD_WEBHOOK_CRUNCHYROLL }}
           DISCORD_WEBHOOK_JPGENERAL: ${{ secrets.DISCORD_WEBHOOK_JP_NEWS }}
+          DISCORD_WEBHOOK_TWITTER: ${{ secrets.DISCORD_WEBHOOK_TWITTER }}
           # Channel kurasi berita berpotensi viral
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
           # Terjemahan judul dan ringkasan melalui Gemini.
@@ -73,6 +74,9 @@ jobs:
           # Opsional: bridge RSS akun X milik sendiri, mis. https://rsshub.domainmu.com/twitter/user/{account}
           X_RSS_URL: ${{ secrets.X_RSS_URL }}
           X_ACCOUNTS: ${{ vars.X_ACCOUNTS }}
+          # Opsional: ganti daftar akun channel Twitter & batas umur postingan
+          X_TWITTER_ACCOUNTS: ${{ vars.X_TWITTER_ACCOUNTS }}
+          X_MAX_AGE_HOURS: ${{ vars.X_MAX_AGE_HOURS }}
         run: python -u main.py ${{ inputs.dry_run && '--dry-run' || '' }}
         timeout-minutes: 22
 

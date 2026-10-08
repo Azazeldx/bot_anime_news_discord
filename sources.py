@@ -13,6 +13,8 @@ from html import unescape
 from bs4 import BeautifulSoup
 from defusedxml.ElementTree import fromstring as parse_xml  # aman dari XML bomb / XXE
 
+import x_accounts
+
 # --- BAGIAN PARSER ---
 
 def parse_oricon(soup):
@@ -573,6 +575,15 @@ if "{account}" in X_RSS_URL:
             RADAR.append({"url": X_RSS_URL.format(account=account), "lang": lang or "en",
                           "rss": f"X @{account}", "home": f"https://x.com/{account}"})
 
+# 11. TWITTER / X - postingan terbaru akun X pilihan (lihat x_accounts.py & README).
+# Akun yang sudah punya channel sendiri tidak diambil dua kali sebagai radar.
+TWITTER = [{"url": f"https://x.com/{account}", "x": account, "lang": lang, "channel": "TWITTER",
+            "color": "1d9bf0", "emoji": "🐦", "home": f"https://x.com/{account}"}
+           for account, lang in x_accounts.accounts()]
+_twitter_homes = {site["home"].lower() for site in TWITTER}
+RADAR = [site for site in RADAR if site["home"].lower() not in _twitter_homes]
+
+TARGETS += TWITTER
 TARGETS += [{**site, "channel": None, "limit": 10} for site in RADAR]
 
 # Dihapus karena memblokir bot (Cloudflare / human verification), juga dari server GitHub:

@@ -434,8 +434,11 @@ def _gemini(payload):
             "responseMimeType": "application/json", "responseSchema": _gemini_schema(OUTPUT_SCHEMA),
         },
     }
+    status = None
     for attempt, model in enumerate(models):
         if attempt:
+            if status == "ReadTimeout" and model == models[attempt - 1]:
+                continue  # model lambat: jangan tunggu 120 detik lagi, langsung ke cadangan
             time.sleep(5)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         try:

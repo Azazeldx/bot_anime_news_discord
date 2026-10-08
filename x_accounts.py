@@ -16,6 +16,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from html import unescape
 
+import requests
 from bs4 import BeautifulSoup
 
 SYNDICATION_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name/{account}"
@@ -25,6 +26,7 @@ DEFAULT_ACCOUNTS = ("SomosKudasai:es,animetrends:en,Dexerto:en,animetv_jp:en,Man
                     "WSJ_manga:en,AniNewsAndFacts:en,seiyuucorner:en,Seifukuanimehub:en")
 MAX_AGE_HOURS = float(os.getenv("X_MAX_AGE_HOURS") or 24)  # tweet lebih lama tidak dikirim
 TEXT_LIMIT = 1000
+_syndication_blocked = False  # diset saat 429, supaya akun berikutnya tidak ikut menunggu
 
 
 def accounts():
@@ -142,8 +144,15 @@ def fetch(session, site, parse_rss):
         response.raise_for_status()
         return normalize_rss(parse_rss(response.content, f"X @{account}", limit * 2), account)[:limit]
 
-    response = session.get(SYNDICATION_URL.format(account=account), timeout=20,
-                           headers={"Accept": "text/html"})
+    global _syndication_blocked
+    if _syndication_blocked:
+        raise RuntimeError("dilewati, timeline X sedang rate limit (isi X_RSS_URL agar stabil)")
+    # Tanpa retry adapter session: 429 di sini biasanya berlaku untuk semua akun.
+    response = requests.get(SYNDICATION_URL.format(account=account), timeout=20,
+                            headers=dict(session.headers, Accept="text/html"))
+    if response.status_code == 429:
+        _syndication_blocked = True
+        raise RuntimeError("timeline X kena rate limit (429); akun X lain dilewati di run ini")
     response.raise_for_status()
     response.encoding = "utf-8"
     return parse_syndication(response.text, account, limit)

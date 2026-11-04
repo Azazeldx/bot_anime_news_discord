@@ -42,7 +42,7 @@ class SyndicationTests(unittest.TestCase):
         self.assertEqual(items[0]["title"], "Anime baru https://ex.com/a")
         self.assertEqual(items[0]["img"], "https://pbs.twimg.com/media/x.jpg")
         self.assertEqual(items[0]["source"], "X @Dexerto")
-        self.assertIn("_bigger.", items[0]["x_avatar"])
+        self.assertIn("_bigger.", items[0]["author_avatar"])
         self.assertEqual(items[1]["title"], "Tweet kedua & terakhir")
         self.assertEqual(items[0]["published"], datetime(2026, 10, 8, 3, 0, tzinfo=timezone.utc))
 
@@ -91,7 +91,7 @@ class IntegrationTests(unittest.TestCase):
         site = {"x": "Dexerto", "lang": "en", "channel": "TWITTER", "emoji": "🐦", "color": "1d9bf0",
                 "home": "https://x.com/Dexerto"}
         item = {"title": "Headline\nDetail", "link": "https://x.com/Dexerto/status/1", "img": "",
-                "source": "X @Dexerto", "lang": "en", "site": site, "x_name": "Dexerto",
+                "source": "X @Dexerto", "lang": "en", "site": site, "author_name": "Dexerto",
                 "title_id": "Judul\nDetail terjemahan", "summary_id": "", "published": NOW}
         embed = main.build_news_embed(item)
         self.assertEqual(embed.title, "🐦 Judul")

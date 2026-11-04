@@ -14,14 +14,19 @@ from urllib.parse import quote
 from bs4 import BeautifulSoup
 from defusedxml.ElementTree import fromstring as parse_xml  # aman dari XML bomb / XXE
 
+import telegram_channels
 import x_accounts
+
+# Jumlah berita terbaru yang dibaca per sumber. Run GitHub Actions sering tertunda berjam-jam,
+# jadi jendela harus cukup lebar agar berita di antara dua run tidak terlewat.
+SOURCE_LIMIT = int(os.getenv("SOURCE_LIMIT") or 15)
 
 # --- BAGIAN PARSER ---
 
 def parse_oricon(soup):
     results = []
     articles = soup.select('article.card')
-    for item in articles[:5]:
+    for item in articles:
         title_elm = item.find('h2', class_='title')
         link_elm = item.find('a')
         img_elm = item.find('img')
@@ -39,7 +44,7 @@ def parse_somoskudasai(soup):
     results = []
     articles = soup.select('ul.ul li') 
     
-    for item in articles[:5]:
+    for item in articles:
         try:
             link_elm = item.find('a')
             if not link_elm: continue
@@ -80,7 +85,7 @@ def parse_ann(soup):
     results = []
     articles = soup.select('div.herald.box.news') 
     
-    for item in articles[:5]:
+    for item in articles:
         try:
     
             title_elm = item.find('h3')
@@ -119,7 +124,7 @@ def parse_gamebrott(soup):
     results = []
     articles = soup.select('article.jeg_post')
     
-    for item in articles[:5]:
+    for item in articles:
         try:
             title_elm = item.select_one('.jeg_post_title a')
             if not title_elm: continue
@@ -149,7 +154,7 @@ def parse_gamebrott(soup):
 def parse_yaraon(soup):
     results = []
     articles = soup.select('div.entrylist') 
-    for item in articles[:5]:
+    for item in articles:
         title_elm = item.select_one('h4.entrylist_title a')
         img_elm = item.select_one('figure img')
         if title_elm:
@@ -165,7 +170,7 @@ def parse_animatetimes(soup):
     results = []
     articles = soup.select('.row--foritem .c-item')
 
-    for item in articles[:5]:
+    for item in articles:
         try:
             link_elm = item.find('a', class_='c-item-link')
             if not link_elm: continue
@@ -199,7 +204,7 @@ def parse_animatetimes(soup):
 def parse_otakomu(soup):
     results = []
     articles = soup.select('article')
-    for item in articles[:5]:
+    for item in articles:
         title_elm = None
         link_elm = None
         img_src = ""
@@ -231,7 +236,7 @@ def parse_otakomu(soup):
 def parse_mantanweb(soup):
     results = []
     articles = soup.select('li.article-list_horizontal__item')
-    for item in articles[:5]:
+    for item in articles:
         link_elm = item.find('a', class_='article-list_horizontal__unit')
         title_elm = item.find('h3', class_='article-list_horizontal__title')
         img_elm = item.find('img')
@@ -248,7 +253,7 @@ def parse_mantanweb(soup):
 def parse_esuteru(soup):
     results = []
     articles = soup.select('article')
-    for item in articles[:5]:
+    for item in articles:
         title_elm = None
         link_elm = None
         img_src = ""
@@ -280,7 +285,7 @@ def parse_esuteru(soup):
 def parse_famitsu(soup):
     results = []
     articles = soup.find_all('div', class_=lambda x: x and 'cardContainer' in x)
-    for item in articles[:5]:
+    for item in articles:
         try:
             title_elm = item.find('p', class_=lambda x: x and 'cardTitle' in x)
             link_elm = item.find('a')
@@ -302,7 +307,7 @@ def parse_famitsu(soup):
 def parse_animeanime(soup):
     results = []
     articles = soup.find_all('section', class_=lambda x: x and 'item--cate-news' in x)
-    for item in articles[:5]:
+    for item in articles:
         try:
             link_elm = item.find('a', class_='link')
             title_elm = item.find('h2', class_='title')
@@ -327,7 +332,7 @@ def parse_vtub0(soup):
     results = []
     articles = soup.select('article.post-list')
     
-    for item in articles[:5]:
+    for item in articles:
         try:
             
             link_elm = item.find('a')
@@ -361,7 +366,7 @@ def parse_moguravr(soup):
     
     articles = soup.select('a.mg-hover-card-link')
     
-    for item in articles[:5]:
+    for item in articles:
         try:
             
             link = item.get('href')
@@ -393,7 +398,7 @@ def parse_4gamer(soup):
     results = []
     articles = soup.select('div.V2_article_container')
 
-    for item in articles[:5]:
+    for item in articles:
         try:
             h2_elm = item.find('h2')
             if not h2_elm: continue
@@ -450,13 +455,12 @@ def parse_dengeki(soup):
             "img": img_elm.get('src') if img_elm else "",
             "source": "Dengeki Online"
         })
-        if len(results) == 5: break
     return results
 
 def _strip_html(text):
     return re.sub(r'\s+', ' ', BeautifulSoup(text or '', 'html.parser').get_text(' ')).strip()
 
-def _parse_date(text):
+def parse_date(text):
     """Tanggal RSS (RFC 822) atau Atom/RDF (ISO 8601) -> datetime UTC, None kalau tidak terbaca."""
     try:
         date = parsedate_to_datetime(text)
@@ -467,7 +471,7 @@ def _parse_date(text):
             return None
     return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
 
-def parse_rss(content, source, limit=5):
+def parse_rss(content, source, limit=SOURCE_LIMIT):
     """Parser generik RSS 2.0, RSS 1.0 (RDF) dan Atom (lebih awet daripada scraping HTML)."""
     results = []
     root = parse_xml(content)
@@ -497,20 +501,23 @@ def parse_rss(content, source, limit=5):
             "img": img,
             "source": source,
             "summary": _strip_html(fields.get('description') or fields.get('summary'))[:500],
-            "published": _parse_date(fields.get('pubDate') or fields.get('published')
-                                     or fields.get('updated') or fields.get('date')),
+            "published": parse_date(fields.get('pubDate') or fields.get('published')
+                                    or fields.get('updated') or fields.get('date')),
         })
     return results
 
 # --- DAFTAR WEBSITE & CONFIG TAMPILAN ---
 # "channel" = nama webhook, dibaca dari env DISCORD_WEBHOOK_<channel>.
-# Sumber RSS memakai "rss": "<nama sumber>" sebagai ganti "parser".
+# Sumber RSS memakai "rss": "<nama sumber>" sebagai ganti "parser"; akun Bluesky memakai
+# "bsky": "<handle>", channel Telegram memakai "telegram": "<channel>".
+# "limit" = jumlah berita terbaru yang dibaca per sumber (default SOURCE_LIMIT).
+
 TARGETS = [
     # 1. ORICON
     {"url": "https://www.oricon.co.jp/category/anime/", "lang": "ja", "parser": parse_oricon, "channel": "ORICON", "color": "e60033", "emoji": "🇯🇵"},
 
-    # 2. INDO NEWS - halaman HTML KAORI memblokir server GitHub (403), pakai RSS rubriknya
-    {"url": "https://www.kaorinusantara.or.id/rubrik/aktual/anime/feed", "lang": "id", "rss": "KAORI Nusantara", "channel": "INDO", "color": "ff9900", "emoji": "🇮🇩", "home": "https://www.kaorinusantara.or.id/"},
+    # 2. INDO NEWS - KAORI Nusantara kini memblokir semua bot lewat Cloudflare, diganti Gwigwi
+    {"url": "https://gwigwi.com/feed/", "lang": "id", "rss": "Gwigwi", "channel": "INDO", "color": "ff9900", "emoji": "🇮🇩", "home": "https://www.gwigwi.com/"},
 
     # 3. GAME & TECH
     {"url": "https://www.famitsu.com/category/pc-game/page/1", "lang": "ja", "parser": parse_famitsu, "channel": "GAME", "color": "00ff00", "emoji": "🎮"},
@@ -529,6 +536,8 @@ TARGETS = [
     {"url": "https://animeanime.jp/category/news/latest/latest/", "lang": "ja", "parser": parse_animeanime, "channel": "GENERAL", "color": "0099ff", "emoji": "📺"},
     {"url": "https://dengekionline.com/category/anime/page/1", "lang": "ja", "parser": parse_dengeki, "channel": "GENERAL", "color": "0099ff", "emoji": "📺"},
     {"url": "https://www.animatetimes.com/anime/", "lang": "ja", "parser": parse_animatetimes, "channel": "GENERAL", "color": "003c86", "emoji": "🇯🇵"},
+    # Comic Natalie: natalie.mu memblokir bot, tetapi tiap artikelnya diposting ke Bluesky
+    {"url": "https://bsky.app/profile/comic.natalie.mu", "bsky": "comic.natalie.mu", "name": "Comic Natalie", "lang": "ja", "channel": "GENERAL", "color": "f7a400", "emoji": "🇯🇵", "home": "https://natalie.mu/comic"},
 
     # 6. LIGHT NOVEL & Manga
     {"url": "https://animeanime.jp/category/news/novel/latest/", "lang": "ja", "parser": parse_animeanime, "channel": "LN", "color": "9900cc", "emoji": "📚"},
@@ -550,6 +559,12 @@ TARGETS = [
     # 10. JAPAN GENERAL NEWS - halaman /flash sudah berubah, pakai RSS Yahoo! News
     {"url": "https://news.yahoo.co.jp/rss/topics/top-picks.xml", "lang": "ja", "rss": "Yahoo! Japan News", "channel": "JPGENERAL", "color": "ff0033", "emoji": "🔴", "home": "https://news.yahoo.co.jp/"},
     {"url": "https://news.yahoo.co.jp/rss/categories/entertainment.xml", "lang": "ja", "rss": "Yahoo! Japan Entame", "channel": "JPGENERAL", "color": "ff0033", "emoji": "🔴", "home": "https://news.yahoo.co.jp/categories/entertainment"},
+
+    # 11. LEAKS - bocoran anime/manga. Sugoi LITE (@SugoiLITE di X) me-mirror postingannya ke
+    # Telegram t.me/sugoileaks yang bisa dibaca tanpa login (lihat telegram_channels.py & README).
+    *[{"url": f"https://t.me/s/{channel}", "telegram": channel, "name": name, "lang": lang, "channel": "LEAKS",
+       "color": "e040fb", "emoji": "🤫", "home": f"https://t.me/{channel}", "leak": True}
+      for channel, lang, name in telegram_channels.channels()],
 ]
 
 # Sumber khusus radar Areaanime ("channel": None): ikut dinilai & menambah hitungan liputan
@@ -561,13 +576,17 @@ RADAR = [
     {"url": "https://animeanime.jp/rss/index.rdf", "lang": "ja", "rss": "Anime!Anime!", "home": "https://animeanime.jp/"},
     {"url": "https://automaton-media.com/feed/", "lang": "ja", "rss": "AUTOMATON", "home": "https://automaton-media.com/"},
     {"url": "https://kincir.com/feed/", "lang": "id", "rss": "Kincir", "home": "https://kincir.com/"},
+    {"url": "https://otakuusamagazine.com/feed/", "lang": "en", "rss": "Otaku USA", "home": "https://otakuusamagazine.com/"},
+    {"url": "https://www.siliconera.com/feed/", "lang": "en", "rss": "Siliconera", "home": "https://www.siliconera.com/"},
+    {"url": "https://gematsu.com/feed", "lang": "en", "rss": "Gematsu", "home": "https://gematsu.com/"},
+    {"url": "https://www.inside-games.jp/rss/index.rdf", "lang": "ja", "rss": "Inside Games", "home": "https://www.inside-games.jp/"},
 ]
 
 # Akun X (opsional). X tidak punya RSS/API gratis, jadi isi env X_RSS_URL dengan bridge RSS
 # milik sendiri, mis. RSSHub: https://rsshub.domainmu.com/twitter/user/{account}
 # Daftar akun bisa diganti lewat env X_ACCOUNTS="akun:bahasa,akun:bahasa".
-X_ACCOUNTS = os.getenv("X_ACCOUNTS") or (
-    "MangaMoguraRE:en,animecorner_ac:en,AniTrendz:en,anime_natalie:ja,comic_natalie:ja,animatetimes:ja")
+# Comic Natalie dibaca lewat Bluesky (lihat TARGETS), jadi tidak perlu akun X natalie di sini.
+X_ACCOUNTS = os.getenv("X_ACCOUNTS") or "MangaMoguraRE:en,animecorner_ac:en,AniTrendz:en,animatetimes:ja"
 X_RSS_URL = os.getenv("X_RSS_URL", "")
 if "{account}" in X_RSS_URL:
     for entry in X_ACCOUNTS.split(","):
@@ -587,7 +606,7 @@ if "/twitter/" in X_RSS_URL and X_SEARCH.strip():
     RADAR.append({"url": X_RSS_URL.split("/twitter/")[0] + "/twitter/keyword/" + quote(X_SEARCH, safe=""),
                   "lang": "id", "rss": "X Indonesia", "home": "https://x.com/search"})
 
-# 11. TWITTER / X - postingan terbaru akun X pilihan (lihat x_accounts.py & README).
+# 12. TWITTER / X - postingan terbaru akun X pilihan (lihat x_accounts.py & README).
 # Akun yang sudah punya channel sendiri tidak diambil dua kali sebagai radar.
 TWITTER = [{"url": f"https://x.com/{account}", "x": account, "lang": lang, "channel": "TWITTER",
             "color": "1d9bf0", "emoji": "🐦", "home": f"https://x.com/{account}"}
@@ -597,7 +616,10 @@ RADAR = [site for site in RADAR if site["home"].lower() not in _twitter_homes]
 
 TARGETS += TWITTER
 TARGETS += [{**site, "channel": None, "limit": 10} for site in RADAR]
+for _site in TARGETS:
+    _site.setdefault("limit", SOURCE_LIMIT)
 
 # Dihapus karena memblokir bot (Cloudflare / human verification), juga dari server GitHub:
 #   - https://gamerwk.com/        (403 "Just a moment...")
-#   - https://natalie.mu/comic    (405 "Human Verification")
+#   - https://natalie.mu/comic    (405 "Human Verification"; dibaca lewat Bluesky)
+#   - https://www.kaorinusantara.or.id/ (403 Cloudflare "Just a moment...", juga RSS & wp-json)

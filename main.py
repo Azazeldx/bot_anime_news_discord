@@ -1,7 +1,8 @@
 import os
+import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urljoin
 
 import requests
@@ -13,17 +14,22 @@ from urllib3.util.retry import Retry
 
 load_dotenv()
 
+import bluesky  # noqa: E402
 import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
 import history_store  # noqa: E402
+import telegram_channels  # noqa: E402
 import x_accounts  # noqa: E402
 import x_trends  # noqa: E402
 from translator import GeminiTranslator, TranslationUnavailable  # noqa: E402
-from sources import TARGETS, parse_rss  # noqa: E402
+from sources import TARGETS, parse_date, parse_rss  # noqa: E402
 
 # --- KONFIGURASI ---
 WH_AREAANIME = os.getenv("DISCORD_WEBHOOK_AREAANIME")
 HISTORY_FILE = "history.json"
 DRY_RUN = "--dry-run" in sys.argv   # cek hasil tanpa kirim ke Discord & tanpa simpan history
+# Berita kategori yang terbit lebih lama dari ini tidak dikirim (0 = tanpa batas), supaya jendela
+# sumber yang lebar tidak mengirim ulang berita lama.
+NEWS_MAX_AGE_HOURS = float(os.getenv("NEWS_MAX_AGE_HOURS") or 48)
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
@@ -61,12 +67,26 @@ def translate_item(item):
     if item.get('_translation_error'):
         raise TranslationUnavailable(item['_translation_error'])
     title, summary = item['title'], clip(item.get('summary'), 350)
+    social = is_social(item.get('site') or {})
+    if social:
+        # Teks postingan panjang: kirim baris pertama sebagai judul dan sisanya sebagai ringkasan,
+        # supaya model tidak meringkas seluruh postingan menjadi satu judul.
+        title, _, rest = title.partition("\n")
+        summary = rest.strip()
     try:
         title_id, summary_id = TRANSLATOR.translate(title, summary, item['lang'])
     except TranslationUnavailable as error:
         item['_translation_error'] = str(error)
         raise
+    if social:
+        title_id, summary_id = (f"{title_id}\n\n{summary_id}" if summary_id else title_id), ""
     item['title_id'], item['summary_id'] = title_id, summary_id
+    return item
+
+
+def is_social(site):
+    """Postingan X / Telegram: teks lengkap ada di "title", ditampilkan dengan embed sosial."""
+    return 'x' in site or 'telegram' in site
     return item
 
 
@@ -80,19 +100,25 @@ def favicon(url):
 
 
 def fetch_items(site):
-    if 'x' in site:
-        items = x_accounts.fetch(SESSION, site, parse_rss)
+    if 'x' in site or 'telegram' in site or 'bsky' in site:
+        if 'x' in site:
+            items = x_accounts.fetch(SESSION, site, parse_rss)
+        elif 'telegram' in site:
+            items = telegram_channels.fetch(SESSION, site)
+        else:
+            items = bluesky.fetch(SESSION, site)
         for item in items:
-            item.update(lang=site['lang'], site=site, _enriched=True)  # halaman x.com tidak bisa di-scrape
+            # Postingan sudah membawa teks & gambar; halaman x.com / t.me tidak bisa di-scrape.
+            item.update(lang=site['lang'], site=site, _enriched=True)
         return items
 
     response = SESSION.get(site['url'], timeout=20)
     response.raise_for_status()
     if 'rss' in site:
-        items = parse_rss(response.content, site['rss'], site.get('limit', 5))
+        items = parse_rss(response.content, site['rss'], site['limit'])
     else:
         response.encoding = response.apparent_encoding
-        items = site['parser'](BeautifulSoup(response.text, 'html.parser'))
+        items = site['parser'](BeautifulSoup(response.text, 'html.parser'))[:site['limit']]
 
     for item in items:
         item['link'] = urljoin(site['url'], item['link'] or "")
@@ -104,7 +130,7 @@ def fetch_items(site):
 
 
 def enrich(item):
-    """Ambil ringkasan & gambar resolusi penuh dari meta og: artikel (sekali per berita)."""
+    """Ambil ringkasan, gambar resolusi penuh & tanggal terbit dari meta artikel (sekali per berita)."""
     if item.get('_enriched'):
         return item
     item['_enriched'] = True
@@ -116,7 +142,8 @@ def enrich(item):
 
         def meta(*names):
             for name in names:
-                tag = soup.find('meta', attrs={'property': name}) or soup.find('meta', attrs={'name': name})
+                tag = (soup.find('meta', attrs={'property': name}) or soup.find('meta', attrs={'name': name})
+                       or soup.find('meta', attrs={'itemprop': name}))
                 if tag and tag.get('content'):
                     return tag['content'].strip()
             return ""
@@ -126,17 +153,40 @@ def enrich(item):
             item['img'] = urljoin(item['link'], og_image)
         if not item.get('summary'):
             item['summary'] = meta('og:description', 'description', 'twitter:description')
+        if not item.get('published'):
+            # Urutan: meta artikel, JSON-LD, lalu <time datetime> pertama (blog Livedoor, Oricon).
+            json_ld = re.search(r'"datePublished"\s*:\s*"([^"]+)"', response.text)
+            time_tag = soup.find('time', attrs={'datetime': True})
+            item['published'] = parse_date(
+                meta('article:published_time', 'datePublished', 'pubdate', 'aja:published_date')
+                or (json_ld.group(1) if json_ld else None)
+                or (time_tag['datetime'] if time_tag else None))
     except Exception as e:
         print(f"    (meta artikel tidak terbaca: {type(e).__name__})")
     return item
 
 
-def send_webhook(url, embed, username=None):
+def is_stale(item, now=None):
+    published = item.get('published')
+    if not published or NEWS_MAX_AGE_HOURS <= 0:
+        return False
+    return published < (now or datetime.now(timezone.utc)) - timedelta(hours=NEWS_MAX_AGE_HOURS)
+
+
+def send_webhook(url, embed, username=None, extra_images=()):
+    """Kirim embed. extra_images (maks. 3) tampil sebagai galeri: Discord menggabungkan embed
+    dengan url yang sama menjadi satu postingan berisi beberapa gambar."""
     if DRY_RUN:
-        print(f"    [DRY-RUN] {embed.title}")
+        gallery = f" (+{len(extra_images[:3])} gambar)" if extra_images else ""
+        print(f"    [DRY-RUN] {embed.title}{gallery}")
         return True
     webhook = DiscordWebhook(url=url, username=username, rate_limit_retry=False, timeout=20)
     webhook.add_embed(embed)
+    if embed.url:
+        for image in extra_images[:3]:
+            extra = DiscordEmbed(url=embed.url)
+            extra.set_image(url=image)
+            webhook.add_embed(extra)
     try:
         for attempt in range(3):
             # Panggilan transport menghindari retry 429 tanpa batas milik library.
@@ -145,6 +195,7 @@ def send_webhook(url, embed, username=None):
                     return True
                 if attempt < 2 and response.status_code == 400 and webhook.embeds[0].get('image'):
                     print("    Gagal kirim (400). Mencoba kirim tanpa gambar...")
+                    webhook.embeds = webhook.embeds[:1]
                     webhook.embeds[0].pop('image')
                     continue
                 if attempt < 2 and response.status_code == 429:
@@ -162,20 +213,42 @@ def send_webhook(url, embed, username=None):
 
 
 # --- TAMPILAN EMBED ---
-def build_tweet_embed(item):
+def gallery(item):
+    """Gambar tambahan selain gambar utama, untuk send_webhook(extra_images=...)."""
+    return [url for url in item.get('images') or [] if url != item.get('img')]
+
+
+# platform: (nama di footer, situs untuk ikon, label tombol link)
+PLATFORMS = {
+    "x": ("X (Twitter)", "https://x.com/", "X"),
+    "telegram": ("Telegram", "https://t.me/", "Telegram"),
+}
+
+
+def build_social_embed(item):
+    """Embed postingan X / Telegram: teks terjemahan lengkap + teks asli."""
     site = item['site']
+    platform = "x" if 'x' in site else "telegram"
+    footer, platform_home, label = PLATFORMS[platform]
     translate_item(item)
     text, original = item['title_id'], item['title']
-    handle = item['source'].removeprefix('X ')
+    handle = item['source'].removeprefix('X ') if platform == "x" else f"t.me/{site['telegram']}"
 
     # Baris pertama jadi judul embed, sisanya deskripsi (supaya teks tidak tampil dua kali).
     first, _, rest = text.partition("\n")
     if len(first) > 250:
         first, rest = handle, text
-    parts = [clip(rest.strip(), 3000)] if rest.strip() else []
+    parts = []
+    if site.get('leak'):
+        parts.append("⚠️ *Bocoran (leak): belum tentu resmi dan bisa berisi spoiler.*")
+    if rest.strip():
+        parts.append(clip(rest.strip(), 3000))
     if text != original:
         parts.append("> 📝 " + clip(original, 700).replace("\n", "\n> "))
-    parts.append(f"👉 **[Lihat postingan di X]({item['link']})**")
+    links = [f"👉 **[Lihat postingan di {label}]({item['link']})**"]
+    if item.get('x_link'):
+        links.append(f"🐦 [Postingan X]({item['x_link']})")
+    parts.append(" · ".join(links))
 
     embed = DiscordEmbed(
         title=clip(f"{site.get('emoji', '🐦')} {first or handle}", 256),
@@ -183,9 +256,9 @@ def build_tweet_embed(item):
         color=site.get('color', '1d9bf0'),
         url=item['link'],
     )
-    embed.set_author(name=f"{item.get('x_name') or handle} ({handle})", url=site.get('home'),
-                     icon_url=item.get('x_avatar') or favicon("https://x.com/"))
-    embed.set_footer(text="X (Twitter) • Bot Berita", icon_url=favicon("https://x.com/"))
+    embed.set_author(name=f"{item.get('author_name') or handle} ({handle})", url=site.get('home'),
+                     icon_url=item.get('author_avatar') or favicon(platform_home))
+    embed.set_footer(text=f"{footer} • Bot Berita", icon_url=favicon(platform_home))
     if item.get('published'):
         embed.set_timestamp(item['published'].timestamp())
     else:
@@ -196,8 +269,8 @@ def build_tweet_embed(item):
 
 
 def build_news_embed(item):
-    if 'x' in item['site']:
-        return build_tweet_embed(item)
+    if is_social(item['site']):
+        return build_social_embed(item)
     site = item['site']
     home = site.get('home', site['url'])
     icon = favicon(home)
@@ -294,6 +367,13 @@ def record_area_post(history, link, key, title):
 
 
 # --- MAIN LOOP ---
+def mark_sent(history, sent, link):
+    sent.add(link)
+    history["sent"].append(link)
+    if not DRY_RUN:
+        save_history(history)
+
+
 def main():
     print("Memulai pengecekan multi-website..." + (" (DRY-RUN)" if DRY_RUN else ""))
     if not TRANSLATOR.api_key:
@@ -351,7 +431,7 @@ def main():
             except TranslationUnavailable as error:
                 print(f"    Areaanime ditunda: {error}")
                 continue
-            if send_webhook(WH_AREAANIME, embed, username="Areaanime Radar"):
+            if send_webhook(WH_AREAANIME, embed, username="Areaanime Radar", extra_images=gallery(item)):
                 history["areaanime_seen"].append(item['link'])
                 record_area_post(history, item['link'], info['key'], item['title'])
             time.sleep(1.5)
@@ -368,17 +448,20 @@ def main():
         for item in reversed(items):
             if item['link'] in sent:
                 continue
+            enrich(item)
+            if is_stale(item):
+                # Berita lama yang baru masuk jendela sumber: tandai saja, jangan kirim.
+                print(f"    [LAMA] {item['source']}: {item['title'][:40]}... (terbit {item['published']:%Y-%m-%d})")
+                mark_sent(history, sent, item['link'])
+                continue
             print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
             try:
-                embed = build_news_embed(enrich(item))
+                embed = build_news_embed(item)
             except TranslationUnavailable as error:
                 print(f"    Berita ditunda: {error}")
                 continue
-            if send_webhook(webhook_url, embed):
-                sent.add(item['link'])
-                history["sent"].append(item['link'])
-                if not DRY_RUN:
-                    save_history(history)
+            if send_webhook(webhook_url, embed, extra_images=gallery(item)):
+                mark_sent(history, sent, item['link'])
             time.sleep(1.5)
 
     if DRY_RUN:

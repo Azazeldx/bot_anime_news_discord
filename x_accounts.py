@@ -63,12 +63,11 @@ def _tweet_text(tweet):
     return _clean(text)
 
 
-def _tweet_image(tweet):
-    for media in ((tweet.get("extended_entities") or {}).get("media")
-                  or (tweet.get("entities") or {}).get("media") or []):
-        if media.get("media_url_https"):
-            return media["media_url_https"]
-    return ""
+def _tweet_images(tweet):
+    """Semua gambar tweet (maksimal 4), untuk galeri embed Discord."""
+    return [media["media_url_https"] for media in ((tweet.get("extended_entities") or {}).get("media")
+                                                   or (tweet.get("entities") or {}).get("media") or [])
+            if media.get("media_url_https")][:4]
 
 
 def _is_recent(published, now=None):
@@ -103,15 +102,17 @@ def parse_syndication(html, account, limit=5, now=None):
             continue
         user = tweet.get("user") or {}
         screen_name = user.get("screen_name") or account
+        images = _tweet_images(tweet)
         results.append({
             "title": text[:TEXT_LIMIT],
             "link": f"https://x.com/{screen_name}/status/{tweet['id_str']}",
-            "img": _tweet_image(tweet),
+            "img": images[0] if images else "",
+            "images": images,
             "source": f"X @{screen_name}",
             "summary": "",
             "published": published,
-            "x_name": user.get("name") or screen_name,
-            "x_avatar": (user.get("profile_image_url_https") or "").replace("_normal.", "_bigger."),
+            "author_name": user.get("name") or screen_name,
+            "author_avatar": (user.get("profile_image_url_https") or "").replace("_normal.", "_bigger."),
         })
         if len(results) == limit:
             break
@@ -131,7 +132,7 @@ def normalize_rss(items, account, now=None):
         status = re.search(r"/status(?:es)?/(\d+)", item.get("link") or "")
         link = f"https://x.com/{account}/status/{status.group(1)}" if status else item.get("link")
         results.append(dict(item, title=text[:TEXT_LIMIT], link=link, summary="",
-                            source=f"X @{account}", x_name=account, x_avatar=""))
+                            source=f"X @{account}", author_name=account, author_avatar=""))
     return results
 
 

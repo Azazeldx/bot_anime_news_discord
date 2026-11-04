@@ -58,6 +58,29 @@ class DeliveryTests(unittest.TestCase):
             self.assertFalse(main.send_webhook("https://example.com/webhook", DiscordEmbed(title="News")))
         sleep.assert_not_called()
 
+    def test_gallery_shares_url_and_400_falls_back_to_single_image_free_embed(self):
+        embed = DiscordEmbed(title="News", url="https://t.me/sugoileaks/1")
+        embed.set_image(url="https://cdn/1.jpg")
+        sent = []
+
+        def send(webhook):
+            sent.append([(e.get("url"), (e.get("image") or {}).get("url")) for e in webhook.embeds])
+            return response(400 if len(sent) == 1 else 204)
+
+        with patch.object(main.DiscordWebhook, "api_post_request", send):
+            self.assertTrue(main.send_webhook("https://example.com/webhook", embed,
+                                              extra_images=["https://cdn/2.jpg", "https://cdn/3.jpg"]))
+        self.assertEqual(sent[0], [("https://t.me/sugoileaks/1", f"https://cdn/{n}.jpg") for n in (1, 2, 3)])
+        self.assertEqual(sent[1], [("https://t.me/sugoileaks/1", None)])
+
+    def test_enrich_reads_publish_date_from_article_meta(self):
+        html = '<meta property="article:published_time" content="2026-10-01T09:00:00+09:00">'
+        item = {"link": "https://example.com/a"}
+        with patch.object(main.SESSION, "get", return_value=response(200, html)):
+            main.enrich(item)
+        self.assertEqual(item["published"].isoformat(), "2026-10-01T09:00:00+09:00")
+
+
 class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
@@ -78,6 +101,13 @@ class PipelineTests(unittest.TestCase):
         self.stack.enter_context(patch.object(main.x_trends, "fetch", return_value=[]))
         self.stack.enter_context(patch.object(main, "enrich", side_effect=lambda item: item))
         self.stack.enter_context(patch.object(main, "build_news_embed", return_value=DiscordEmbed(title="Test")))
+
+    def test_stale_news_is_remembered_but_not_sent(self):
+        self.items[1]["published"] = main.datetime(2020, 1, 1, tzinfo=main.timezone.utc)
+        with patch.object(main, "send_webhook", return_value=True) as send:
+            main.main()
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(history_store.load(self.path)["sent"], ["https://example.com/old", "https://example.com/new"])
 
     def test_interruption_keeps_each_successful_delivery(self):
         with patch.object(main, "send_webhook", side_effect=[True, KeyboardInterrupt]):

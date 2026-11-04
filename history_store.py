@@ -5,8 +5,10 @@ import os
 import tempfile
 from pathlib import Path
 
-HISTORY_LIMIT = 2000
-AREAANIME_SEEN_LIMIT = 3000
+# Harus jauh lebih besar dari jumlah link yang terlihat di semua jendela sumber (SOURCE_LIMIT x
+# jumlah sumber), supaya berita lama yang masih tampil di sumber lambat tidak dikirim ulang.
+HISTORY_LIMIT = 6000
+AREAANIME_SEEN_LIMIT = 6000
 AREAANIME_POSTS_LIMIT = 200
 
 

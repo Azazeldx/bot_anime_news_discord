@@ -3,9 +3,9 @@ name: Jalanin Bot Berita
 on:
   # Jadwal jalan otomatis (Cron Job)
   schedule:
-    # Minta jalan setiap 15 menit (catatan: GitHub sering menunda jadwal cron di repo gratis)
-    # Format: menit jam tanggal bulan hari
-    - cron: '*/15 * * * *'
+    # Minta jalan setiap 15 menit. GitHub sering menunda/membuang jadwal pada menit sibuk
+    # (awal jam & kelipatan 15), jadi pakai menit ganjil. Format: menit jam tanggal bulan hari
+    - cron: '7,22,37,52 * * * *'
 
   # Tombol manual buat ngetes (biar ga nunggu jadwal)
   workflow_dispatch:
@@ -26,7 +26,7 @@ concurrency:
 jobs:
   run-news-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
 
     # RSSHub lokal untuk membaca akun X (login lewat cookie auth_token di secret TWITTER_AUTH_TOKEN).
     services:
@@ -84,6 +84,8 @@ jobs:
           DISCORD_WEBHOOK_CRUNCHYROLL: ${{ secrets.DISCORD_WEBHOOK_CRUNCHYROLL }}
           DISCORD_WEBHOOK_JPGENERAL: ${{ secrets.DISCORD_WEBHOOK_JP_NEWS }}
           DISCORD_WEBHOOK_TWITTER: ${{ secrets.DISCORD_WEBHOOK_TWITTER }}
+          # Bocoran anime (Sugoi LITE via Telegram t.me/sugoileaks)
+          DISCORD_WEBHOOK_LEAKS: ${{ secrets.DISCORD_WEBHOOK_LEAKS }}
           # Channel kurasi berita berpotensi viral
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
           # Terjemahan judul dan ringkasan melalui Gemini.
@@ -99,8 +101,14 @@ jobs:
           # Opsional: ganti daftar akun channel Twitter & batas umur postingan
           X_TWITTER_ACCOUNTS: ${{ vars.X_TWITTER_ACCOUNTS }}
           X_MAX_AGE_HOURS: ${{ vars.X_MAX_AGE_HOURS }}
+          # Opsional: channel Telegram publik untuk channel LEAKS (format channel:bahasa:Nama)
+          TELEGRAM_CHANNELS: ${{ vars.TELEGRAM_CHANNELS }}
+          # Opsional: jumlah berita per sumber & batas umur berita kategori
+          SOURCE_LIMIT: ${{ vars.SOURCE_LIMIT }}
+          NEWS_MAX_AGE_HOURS: ${{ vars.NEWS_MAX_AGE_HOURS }}
         run: python -u main.py ${{ inputs.dry_run && '--dry-run' || '' }}
-        timeout-minutes: 22
+        # Jendela sumber lebar: run pertama setelah jeda panjang bisa mengirim banyak berita.
+        timeout-minutes: 40
 
       - name: Simpan History (Commit & Push)
         # Langkah ini penting agar bot tidak lupa berita yang sudah dikirim.

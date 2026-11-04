@@ -37,6 +37,7 @@ Isi di **Settings → Secrets and variables → Actions** (atau di `.env` saat m
 | `DISCORD_WEBHOOK_LEAKS` | Bocoran anime/manga dari Sugoi LITE (lihat Channel Leaks) |
 | `DISCORD_WEBHOOK_AREAANIME` | Kurasi berita berpotensi viral untuk @Areaanime.id |
 | `GEMINI_API_KEY` | Terjemahan Gemini; wajib untuk mengirim berita berbahasa asing |
+| `GEMINI_API_KEY_2` | *Opsional*: key Gemini cadangan saat kuota key utama habis (lihat Mengaktifkan terjemahan Gemini) |
 | `ANTHROPIC_API_KEY` | *Opsional*: kurasi Areaanime dinilai Claude (default memakai Gemini) |
 | `TWITTER_AUTH_TOKEN` | Cookie `auth_token` akun X untuk RSSHub di GitHub Actions (lihat Channel Twitter) |
 | `X_RSS_URL` | *Opsional*: bridge RSS milik sendiri, menggantikan RSSHub bawaan workflow |
@@ -52,6 +53,7 @@ Permintaan Gemini punya timeout dan cache selama satu run. Judul dan ringkasan d
 1. Buat API key di [Google AI Studio](https://aistudio.google.com/apikey).
 2. Tambahkan GitHub Actions secret `GEMINI_API_KEY` pada repository ini. Untuk pemakaian lokal, isi `.env` dengan pengaturan dari `.env.example`.
 3. Jalankan workflow secara manual untuk memeriksa hasil terjemahan. Centang `dry_run` untuk menguji tanpa kiriman Discord atau perubahan history.
+4. *Opsional, key cadangan:* buat key kedua lalu simpan sebagai secret `GEMINI_API_KEY_2`. Kalau key utama kena kuota/rate limit (HTTP 429) atau ditolak (400/401/403), terjemahan dan kurasi Areaanime langsung pindah ke key kedua tanpa jeda dan memakainya sampai run selesai. Kuota gratis Gemini dihitung **per project Google Cloud**, jadi key kedua harus dibuat di project lain (di AI Studio: *Create API key → Create API key in new project*) atau dari akun Google lain. Key kedua dari project yang sama tidak menambah kuota.
 
 Model default adalah `gemini-3.5-flash-lite`. Model dapat diganti lewat environment lokal atau GitHub Actions **variable** `GEMINI_MODEL`. Ketersediaan model dan kuota gratis mengikuti akun Google; lihat [daftar model](https://ai.google.dev/gemini-api/docs/models) dan [harga resmi](https://ai.google.dev/gemini-api/docs/pricing).
 

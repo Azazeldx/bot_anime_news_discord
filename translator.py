@@ -23,19 +23,49 @@ OUTPUT_SCHEMA = {
 }
 
 
+# Status yang berarti key ini tidak bisa dipakai (kuota habis / rate limit / key ditolak):
+# pindah ke key cadangan sebelum menyerah.
+KEY_ERRORS = (400, 401, 403, 429)
+
+
+def gemini_keys():
+    """Key utama (GEMINI_API_KEY) lalu cadangan (GEMINI_API_KEY_2), tanpa yang kosong/duplikat."""
+    keys = (os.getenv("GEMINI_API_KEY", ""), os.getenv("GEMINI_API_KEY_2", ""))
+    return list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+
+
 class TranslationUnavailable(Exception):
     """Berita harus ditunda; pesan aman untuk log, tanpa API key atau isi respons server."""
 
 
 class GeminiTranslator:
     def __init__(self, api_key=None, model=None, request_interval=None):
-        self.api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")
+        """api_key: satu key, list key (urutan cadangan), atau None untuk membaca env."""
+        if api_key is None:
+            self.api_keys = gemini_keys()
+        else:
+            self.api_keys = [k for k in ([api_key] if isinstance(api_key, str) else api_key) if k]
+        self.key_index = 0
         self.model = model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
         self.request_interval = (float(os.getenv("GEMINI_REQUEST_INTERVAL", "6"))
                                  if request_interval is None else request_interval)
         self.failures = 0
         self.disabled_reason = None
         self.last_request = None
+
+    @property
+    def api_key(self):
+        """Key yang sedang dipakai ("" kalau tidak ada)."""
+        return self.api_keys[self.key_index] if self.key_index < len(self.api_keys) else ""
+
+    def _next_key(self, status):
+        """Pindah ke key cadangan. Return False kalau tidak ada key lain."""
+        if self.key_index + 1 >= len(self.api_keys):
+            return False
+        self.key_index += 1
+        print(f"    Gemini key {self.key_index} ditolak/kuota habis (HTTP {status}); "
+              f"beralih ke key {self.key_index + 1}")
+        return True
 
     def translate(self, title, summary, source_lang):
         if source_lang == "id":
@@ -64,7 +94,8 @@ class GeminiTranslator:
         }
         reason = "Gemini tidak tersedia"
         status = None
-        for attempt in range(2):
+        attempt = 0
+        while attempt < 2:
             if self.last_request is not None:
                 pause = self.request_interval - (time.monotonic() - self.last_request)
                 if pause > 0:
@@ -79,6 +110,9 @@ class GeminiTranslator:
                         self.failures = 0
                         return result
                     reason = f"Gemini HTTP {status}"
+                    if status in KEY_ERRORS and self._next_key(status):
+                        attempt = 0  # key baru mendapat jatah percobaan sendiri, tanpa jeda
+                        continue
                     if status in (400, 401, 403, 404):
                         self.disabled_reason = f"{reason}; periksa API key dan model"
                         break
@@ -96,6 +130,7 @@ class GeminiTranslator:
                 delay = 0
             if attempt == 0:
                 time.sleep(delay)
+            attempt += 1
         self.failures += 1
         if status == 429:
             self.disabled_reason = "Kuota/rate limit Gemini; terjemahan ditunda sampai run berikutnya"

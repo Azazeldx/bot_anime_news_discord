@@ -90,6 +90,8 @@ jobs:
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
           # Terjemahan judul dan ringkasan melalui Gemini.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Key cadangan: dipakai otomatis saat key utama kena kuota/rate limit (429) atau ditolak
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
           GEMINI_REQUEST_INTERVAL: ${{ vars.GEMINI_REQUEST_INTERVAL || '6' }}
           # Kurasi Areaanime dinilai Gemini (pakai GEMINI_API_KEY di atas); Claude dipakai kalau key ini diisi

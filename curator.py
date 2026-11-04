@@ -9,7 +9,7 @@ Tujuannya memilih berita yang berpotensi viral untuk feed Instagram @Areaanime.i
 2. LLM: menilai ulang kandidat seperti editor konten, membuat saran judul feed dengan gaya
    Areaanime, dan menandai trending X terkait anime yang belum ada beritanya.
    Pakai Claude kalau ANTHROPIC_API_KEY ada, kalau tidak (atau gagal) pakai Gemini
-   (GEMINI_API_KEY). Kalau keduanya tidak tersedia, otomatis kembali ke heuristik.
+   (GEMINI_API_KEY, cadangan GEMINI_API_KEY_2). Kalau keduanya tidak tersedia, otomatis kembali ke heuristik.
 """
 import json
 import os
@@ -19,6 +19,8 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 import requests
+
+from translator import KEY_ERRORS, gemini_keys
 
 # --- KONFIGURASI (bisa diubah lewat env) ---
 MIN_SCORE = float(os.getenv("AREAANIME_MIN_SCORE", "7"))
@@ -443,9 +445,9 @@ def _claude(payload):
 
 
 def _gemini(payload):
-    """Seperti _claude, lewat Gemini REST API (key yang sama dengan terjemahan)."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    """Seperti _claude, lewat Gemini REST API (key yang sama dengan terjemahan, plus GEMINI_API_KEY_2)."""
+    keys = gemini_keys()
+    if not keys:
         return None
     models = [GEMINI_MODEL, GEMINI_MODEL, GEMINI_FALLBACK]  # ulangi sekali, lalu model cadangan
     if not all(re.fullmatch(r"[a-zA-Z0-9._-]+", m) for m in models):
@@ -460,15 +462,19 @@ def _gemini(payload):
         },
     }
     status = None
-    for attempt, model in enumerate(models):
+    key = attempt = 0
+    while attempt < len(models):
+        model = models[attempt]
         if attempt:
             if status == "ReadTimeout" and model == models[attempt - 1]:
+                attempt += 1
                 continue  # model lambat: jangan tunggu 120 detik lagi, langsung ke cadangan
             time.sleep(5)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         try:
             # Pesan error tidak mencetak URL/header, supaya API key tidak bocor ke log.
-            with requests.post(url, headers={"x-goog-api-key": api_key}, json=body, timeout=(5, 120)) as response:
+            with requests.post(url, headers={"x-goog-api-key": keys[key]}, json=body,
+                               timeout=(5, 120)) as response:
                 status = response.status_code
                 if status == 200:
                     data = response.json()
@@ -487,9 +493,14 @@ def _gemini(payload):
             print("    [Areaanime] Output Gemini tidak valid")
             return None
         print(f"    [Areaanime] Gemini {model} gagal ({status})")
+        if status in KEY_ERRORS and key + 1 < len(keys):
+            key += 1  # kuota habis / key ditolak: ulangi model yang sama dengan key cadangan
+            print(f"    [Areaanime] Beralih ke Gemini key {key + 1}")
+            continue
         # 404 = nama model sudah tidak ada; lanjut ke model cadangan
         if status not in (404, 429, 500, 502, 503, 504, "ConnectionError", "ConnectTimeout", "ReadTimeout"):
             return None
+        attempt += 1
     return None
 
 

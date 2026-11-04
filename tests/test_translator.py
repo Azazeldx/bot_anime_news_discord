@@ -121,3 +121,29 @@ class GeminiTests(unittest.TestCase):
                 self.translator.translate("Other", "Summary", "en")
             self.assertEqual(self.translator.translate("Title", "Summary", "en")[0], "Judul Indonesia")
         self.assertEqual(post.call_count, 3)
+
+    def test_quota_on_first_key_switches_to_second_key_for_rest_of_run(self):
+        translator = GeminiTranslator(api_key=["key-1", "key-2"], request_interval=0)
+        with patch("translator.requests.post", side_effect=[response(429), response(), response()]) as post, \
+                patch("translator.time.sleep") as sleep, patch("builtins.print"):
+            self.assertEqual(translator.translate("Title", "Summary", "en")[0], "Judul Indonesia")
+            translator.translate("Other", "Summary", "en")
+        self.assertEqual([c.kwargs["headers"]["x-goog-api-key"] for c in post.call_args_list],
+                         ["key-1", "key-2", "key-2"])
+        sleep.assert_not_called()
+        self.assertEqual(translator.failures, 0)
+
+    def test_both_keys_exhausted_defers_translation(self):
+        translator = GeminiTranslator(api_key=["key-1", "key-2"], request_interval=0)
+        with patch("translator.requests.post", side_effect=lambda *a, **kw: response(429)) as post, \
+                patch("translator.time.sleep"), patch("builtins.print"):
+            for title in ("Title", "Other"):
+                with self.assertRaises(TranslationUnavailable):
+                    translator.translate(title, "", "en")
+        self.assertEqual(post.call_count, 3)  # key-1 sekali, key-2 dua kali, lalu ditunda
+
+    def test_env_keys_skip_blank_and_duplicate(self):
+        with patch.dict("translator.os.environ", {"GEMINI_API_KEY": "a", "GEMINI_API_KEY_2": " a "}):
+            self.assertEqual(GeminiTranslator().api_keys, ["a"])
+        with patch.dict("translator.os.environ", {"GEMINI_API_KEY": "", "GEMINI_API_KEY_2": "b"}):
+            self.assertEqual(GeminiTranslator().api_key, "b")

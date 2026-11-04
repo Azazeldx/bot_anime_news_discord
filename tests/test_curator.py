@@ -11,7 +11,8 @@ import curator
 import x_trends
 from sources import parse_rss
 
-NO_LLM = {"ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": ""}
+NO_LLM = {"ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": "", "GEMINI_API_KEY_2": ""}
+ONE_GEMINI_KEY = {"ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": "key", "GEMINI_API_KEY_2": ""}
 
 
 def item(title, source="Test", **extra):
@@ -94,7 +95,7 @@ class SelectTests(unittest.TestCase):
         }
         recent = [{"link": "l", "key": "x:ストスト", "title": "ストスト",
                    "ts": datetime.now(timezone.utc).isoformat()}]
-        with patch.dict(curator.os.environ, {"ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": "key"}), \
+        with patch.dict(curator.os.environ, ONE_GEMINI_KEY), \
                 patch.object(curator.requests, "post", return_value=gemini_response(data)) as post:
             picks, watch = curator.select(candidates, candidates, recent, trends)
 
@@ -114,11 +115,26 @@ class SelectTests(unittest.TestCase):
         failed.status_code = 400
         failed._content, failed._content_consumed = b"", True
         candidates = [item("Jujutsu Kaisen season 3 announced")]
-        with patch.dict(curator.os.environ, {"ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": "key"}), \
+        with patch.dict(curator.os.environ, ONE_GEMINI_KEY), \
                 patch.object(curator.requests, "post", return_value=failed) as post:
             picks, _ = curator.select(candidates, candidates, [])
         post.assert_called_once()
         self.assertEqual(picks[0][1]["mode"], "heuristik")
+
+    def test_quota_on_first_key_retries_same_model_with_second_key(self):
+        quota = requests.Response()
+        quota.status_code = 429
+        quota._content, quota._content_consumed = b"", True
+        candidates = [item("Frieren season 3 announced")]
+        data = {"picks": [{"id": 0, "score": 9, "reason": "r", "topic_key": "frieren-s3", "tag": "FRIEREN",
+                           "headline": "h", "x_trend": ""}], "x_watch": []}
+        env = dict(ONE_GEMINI_KEY, GEMINI_API_KEY_2="key-2")
+        with patch.dict(curator.os.environ, env), patch.object(curator.time, "sleep"), \
+                patch.object(curator.requests, "post", side_effect=[quota, gemini_response(data)]) as post:
+            picks, _ = curator.select(candidates, candidates, [])
+        self.assertEqual([c.kwargs["headers"]["x-goog-api-key"] for c in post.call_args_list], ["key", "key-2"])
+        self.assertEqual(post.call_args_list[0].args[0], post.call_args_list[1].args[0])
+        self.assertEqual(picks[0][1]["mode"], "gemini")
 
 
 class FeedTests(unittest.TestCase):

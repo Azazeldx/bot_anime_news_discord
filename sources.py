@@ -607,10 +607,14 @@ if "/twitter/" in X_RSS_URL and X_SEARCH.strip():
                   "lang": "id", "rss": "X Indonesia", "home": "https://x.com/search"})
 
 # 12. TWITTER / X - postingan terbaru akun X pilihan (lihat x_accounts.py & README).
+# Akun leaker masuk channel LEAKS dengan label bocoran, seperti Sugoi LITE.
 # Akun yang sudah punya channel sendiri tidak diambil dua kali sebagai radar.
 TWITTER = [{"url": f"https://x.com/{account}", "x": account, "lang": lang, "channel": "TWITTER",
             "color": "1d9bf0", "emoji": "🐦", "home": f"https://x.com/{account}"}
            for account, lang in x_accounts.accounts()]
+TWITTER += [{"url": f"https://x.com/{account}", "x": account, "lang": lang, "channel": "LEAKS",
+             "color": "e040fb", "emoji": "🤫", "home": f"https://x.com/{account}", "leak": True}
+            for account, lang in x_accounts.accounts("X_LEAKS_ACCOUNTS", x_accounts.DEFAULT_LEAK_ACCOUNTS)]
 _twitter_homes = {site["home"].lower() for site in TWITTER}
 RADAR = [site for site in RADAR if site["home"].lower() not in _twitter_homes]
 

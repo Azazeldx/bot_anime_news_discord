@@ -103,6 +103,8 @@ jobs:
           X_MAX_AGE_HOURS: ${{ vars.X_MAX_AGE_HOURS }}
           # Opsional: channel Telegram publik untuk channel LEAKS (format channel:bahasa:Nama)
           TELEGRAM_CHANNELS: ${{ vars.TELEGRAM_CHANNELS }}
+          # Opsional: akun X leaker untuk channel LEAKS (format akun:bahasa,akun:bahasa)
+          X_LEAKS_ACCOUNTS: ${{ vars.X_LEAKS_ACCOUNTS }}
           # Opsional: jumlah berita per sumber & batas umur berita kategori
           SOURCE_LIMIT: ${{ vars.SOURCE_LIMIT }}
           NEWS_MAX_AGE_HOURS: ${{ vars.NEWS_MAX_AGE_HOURS }}

@@ -24,15 +24,18 @@ SYNDICATION_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-n
 # Akun default channel TWITTER; ganti lewat env X_TWITTER_ACCOUNTS="akun:bahasa,akun:bahasa".
 DEFAULT_ACCOUNTS = ("SomosKudasai:es,animetrends:en,Dexerto:en,animetv_jp:en,MangaMoguraRE:en,"
                     "WSJ_manga:en,AniNewsAndFacts:en,seiyuucorner:en,Seifukuanimehub:en")
+# Akun leaker/insider untuk channel LEAKS (tidak punya mirror Telegram, jadi dibaca lewat X);
+# ganti lewat env X_LEAKS_ACCOUNTS. Akun yang membagikan raw scan bajakan sengaja tidak dimasukkan.
+DEFAULT_LEAK_ACCOUNTS = "d0nut2x:en,animeupdates:en,pewpiece:en,YonkouProd:en"
 MAX_AGE_HOURS = float(os.getenv("X_MAX_AGE_HOURS") or 24)  # tweet lebih lama tidak dikirim
 TEXT_LIMIT = 1000
 _syndication_blocked = False  # diset saat 429, supaya akun berikutnya tidak ikut menunggu
 
 
-def accounts():
-    """[(akun, bahasa)] dari env X_TWITTER_ACCOUNTS atau default."""
+def accounts(env="X_TWITTER_ACCOUNTS", default=DEFAULT_ACCOUNTS):
+    """[(akun, bahasa)] dari env (format "akun:bahasa,akun:bahasa") atau default."""
     result = []
-    for entry in (os.getenv("X_TWITTER_ACCOUNTS") or DEFAULT_ACCOUNTS).split(","):
+    for entry in (os.getenv(env) or default).split(","):
         account, _, lang = entry.strip().lstrip("@").partition(":")
         if re.fullmatch(r"\w{1,15}", account):
             result.append((account, lang.strip() or "en"))

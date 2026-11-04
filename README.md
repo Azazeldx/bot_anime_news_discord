@@ -84,6 +84,8 @@ Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTE
 - Hanya postingan ≤ 24 jam (`TELEGRAM_MAX_AGE_HOURS`). Postingan gambar tanpa teks dilewati.
 - Channel lain bisa ditambahkan lewat variable `TELEGRAM_CHANNELS` (format `channel:bahasa:Nama`, mis. `sugoileaks:en:Sugoi LITE`). Semua masuk channel Leaks dan ikut dinilai Areaanime.
 
+**Akun X leaker.** Channel Leaks juga membaca akun X yang tidak punya mirror Telegram, lewat RSSHub yang sama dengan channel Twitter: [@d0nut2x](https://x.com/d0nut2x) (leaker anime), [@animeupdates](https://x.com/animeupdates) (info jumlah episode & jadwal yang cepat), [@pewpiece](https://x.com/pewpiece) dan [@YonkouProd](https://x.com/YonkouProd) (spoiler One Piece). Daftar bisa diganti lewat variable `X_LEAKS_ACCOUNTS` (format `akun:bahasa,akun:bahasa`). Akun yang membagikan link raw scan bajakan (mis. GSPLeaks, WONPE4CE) sengaja tidak dimasukkan karena berisiko DMCA. @SugoiBingus (akun cadangan Sugoi) tidak perlu ditambahkan karena sudah ter-mirror ke `t.me/sugoileaks`.
+
 **Jalur membaca data "Twitter" yang dipakai bot:**
 
 | Jalur | Butuh login | Stabilitas | Dipakai untuk |
@@ -93,7 +95,7 @@ Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTE
 | RSSHub + cookie X | Ya (`TWITTER_AUTH_TOKEN`) | Sedang, akun bisa dibatasi | Channel Twitter, radar X |
 | Timeline embed X (`syndication.twitter.com`) | Tidak | Rendah, sering 429 | Cadangan lokal |
 
-Sebelum menambah akun X baru, cek dulu apakah akun itu punya mirror Telegram atau Bluesky; jalur itu tidak bergantung pada cookie X.
+Sebelum menambah akun X baru, cek dulu apakah akun itu punya mirror Telegram atau Bluesky; jalur itu tidak bergantung pada cookie X. Setiap akun X tambahan menambah beban pada cookie `TWITTER_AUTH_TOKEN`.
 
 ## Channel Areaanime
 

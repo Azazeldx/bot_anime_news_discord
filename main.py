@@ -30,6 +30,9 @@ DRY_RUN = "--dry-run" in sys.argv   # cek hasil tanpa kirim ke Discord & tanpa s
 # Berita kategori yang terbit lebih lama dari ini tidak dikirim (0 = tanpa batas), supaya jendela
 # sumber yang lebar tidak mengirim ulang berita lama.
 NEWS_MAX_AGE_HOURS = float(os.getenv("NEWS_MAX_AGE_HOURS") or 48)
+# Berhenti mengirim berita baru setelah sekian menit (0 = tanpa batas), supaya run selesai
+# sebelum timeout langkah GitHub Actions (40 menit) dan tidak tercatat gagal.
+RUN_TIME_LIMIT_MINUTES = float(os.getenv("RUN_TIME_LIMIT_MINUTES") or 35)
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
@@ -376,6 +379,7 @@ def mark_sent(history, sent, link):
 
 def main():
     print("Memulai pengecekan multi-website..." + (" (DRY-RUN)" if DRY_RUN else ""))
+    deadline = time.monotonic() + RUN_TIME_LIMIT_MINUTES * 60 if RUN_TIME_LIMIT_MINUTES > 0 else None
     if not TRANSLATOR.api_key:
         print("GEMINI_API_KEY belum diatur; berita asing ditunda, berita Indonesia tetap dikirim.")
     history = load_history()
@@ -401,7 +405,7 @@ def main():
             print("    Tidak ada berita ditemukan (Cek selector?)")
         all_items.extend(items)
         if webhook_url:
-            category_batches.append((webhook_url, items))
+            category_batches.append((webhook_url, items, bool(site.get('leak'))))
 
     # 2. Kurasi berita berpotensi viral untuk channel Areaanime
     if WH_AREAANIME:
@@ -444,10 +448,14 @@ def main():
             time.sleep(1.5)
 
     # 3. Kirim kategori dari yang paling lama, simpan segera setelah setiap kiriman berhasil.
-    for webhook_url, items in category_batches:
+    #    Bocoran paling cepat basi, jadi channel LEAKS dikirim lebih dulu.
+    category_batches.sort(key=lambda batch: not batch[2])
+    for webhook_url, items, _ in category_batches:
         for item in reversed(items):
             if item['link'] in sent:
                 continue
+            if deadline and time.monotonic() > deadline:
+                break
             enrich(item)
             if is_stale(item):
                 # Berita lama yang baru masuk jendela sumber: tandai saja, jangan kirim.
@@ -463,6 +471,11 @@ def main():
             if send_webhook(webhook_url, embed, extra_images=gallery(item)):
                 mark_sent(history, sent, item['link'])
             time.sleep(1.5)
+        else:
+            continue
+        # Berhenti rapi sebelum timeout GitHub Actions; sisanya dicoba lagi pada run berikutnya.
+        print(f"Batas waktu run ({RUN_TIME_LIMIT_MINUTES:g} menit) tercapai; sisa berita dikirim run berikutnya.")
+        break
 
     if DRY_RUN:
         print("DRY-RUN: history tidak disimpan.")

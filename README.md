@@ -64,6 +64,7 @@ Jeda antarpermintaan default 6 detik untuk mengurangi rate limit. Bisa diubah le
 - Postingan X/Telegram/Bluesky dengan beberapa gambar dikirim sebagai galeri (maks. 4 gambar).
 - Cron memakai menit ganjil (`7,22,37,52`) karena GitHub paling sering menunda jadwal di awal jam. Kalau jeda masih terlalu panjang, picu workflow dari luar, mis. [cron-job.org](https://cron-job.org/) yang memanggil `POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/run_bot.yml/dispatches` dengan body `{"ref":"main"}` dan fine-grained token berizin *Actions: write*.
 - Jendela lebar berarti lebih banyak terjemahan Gemini per hari; pantau kuota di Google AI Studio. Kurangi `SOURCE_LIMIT` kalau kuota sering habis.
+- Channel Leaks dikirim paling dulu karena bocoran paling cepat basi. Setelah 35 menit (`RUN_TIME_LIMIT_MINUTES`, 0 = tanpa batas) bot berhenti mengirim berita baru supaya selesai sebelum timeout langkah GitHub Actions (40 menit); sisanya dikirim run berikutnya. Saat Gemini lambat, satu terjemahan bisa makan 20–60 detik, jadi run pertama setelah jeda panjang mungkin butuh beberapa run untuk menghabiskan antrean.
 
 ## Channel Twitter
 

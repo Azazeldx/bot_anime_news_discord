@@ -1,5 +1,6 @@
 import contextlib
 import io
+import itertools
 import json
 import tempfile
 import unittest
@@ -108,6 +109,24 @@ class PipelineTests(unittest.TestCase):
             main.main()
         self.assertEqual(send.call_count, 1)
         self.assertEqual(history_store.load(self.path)["sent"], ["https://example.com/old", "https://example.com/new"])
+
+    def test_leaks_channel_is_sent_before_other_categories(self):
+        leak_site = {"url": "https://t.me/s/leaks", "channel": "LEAK", "leak": True}
+        leak_item = dict(title="bocoran", link="https://t.me/leaks/1", lang="id", source="Leak", site=leak_site)
+        with patch.object(main, "TARGETS", [self.site, leak_site]), \
+                patch.dict(main.os.environ, {"DISCORD_WEBHOOK_LEAK": "leaks"}), \
+                patch.object(main, "fetch_items", side_effect=lambda site: [leak_item] if site.get("leak") else self.items), \
+                patch.object(main, "send_webhook", return_value=True) as send:
+            main.main()
+        self.assertEqual([call.args[0] for call in send.call_args_list], ["leaks", "category", "category"])
+
+    def test_run_stops_cleanly_at_time_limit_and_keeps_rest_retryable(self):
+        with patch.object(main, "RUN_TIME_LIMIT_MINUTES", 1), \
+                patch.object(main.time, "monotonic", side_effect=itertools.count(0, 100)), \
+                patch.object(main, "send_webhook", return_value=True) as send:
+            main.main()
+        send.assert_not_called()
+        self.assertEqual(history_store.load(self.path)["sent"], [])
 
     def test_interruption_keeps_each_successful_delivery(self):
         with patch.object(main, "send_webhook", side_effect=[True, KeyboardInterrupt]):

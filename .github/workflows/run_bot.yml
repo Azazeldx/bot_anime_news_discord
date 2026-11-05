@@ -89,6 +89,9 @@ jobs:
           # File teks berita baru untuk dipilih ChatGPT/Claude (lihat README, Channel Digest)
           DISCORD_WEBHOOK_DIGEST: ${{ secrets.DISCORD_WEBHOOK_DIGEST }}
           DIGEST_MAX_ITEMS: ${{ vars.DIGEST_MAX_ITEMS }}
+          # Digest dikirim setelah sekian berita baru terkumpul atau sekian jam sejak digest terakhir
+          DIGEST_MIN_ITEMS: ${{ vars.DIGEST_MIN_ITEMS }}
+          DIGEST_INTERVAL_HOURS: ${{ vars.DIGEST_INTERVAL_HOURS }}
           # Channel kurasi berita berpotensi viral
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
           # Terjemahan judul dan ringkasan melalui Gemini.

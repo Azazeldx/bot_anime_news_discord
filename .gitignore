@@ -6,3 +6,6 @@ __pycache__/
 .env
 
 # Catatan: history.json SENGAJA di-commit oleh GitHub Actions (memori berita yang sudah dikirim)
+
+# Salinan file digest dari main.py --dry-run
+digest-latest.txt

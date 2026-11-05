@@ -9,6 +9,7 @@ Bot yang mengambil berita anime, manga, game, dan VTuber dari ±40 sumber (Jepan
 | `main.py` | Alur utama: ambil berita, terjemahkan, kirim embed, simpan history |
 | `sources.py` | Daftar sumber (`TARGETS`) dan parser tiap website / RSS |
 | `curator.py` | Kurasi berita berpotensi viral untuk channel Areaanime |
+| `digest.py` | File teks berita baru + instruksi editor untuk dibaca ChatGPT/Claude (channel Digest) |
 | `x_accounts.py` | Postingan terbaru akun X pilihan untuk channel Twitter |
 | `telegram_channels.py` | Postingan channel Telegram publik (`t.me/s/…`) untuk channel Leaks |
 | `bluesky.py` | Postingan akun Bluesky lewat API publik (mis. Comic Natalie) |
@@ -36,6 +37,7 @@ Isi di **Settings → Secrets and variables → Actions** (atau di `.env` saat m
 | `DISCORD_WEBHOOK_TWITTER` | Postingan akun X (lihat Channel Twitter) |
 | `DISCORD_WEBHOOK_LEAKS` | Bocoran anime/manga dari Sugoi LITE (lihat Channel Leaks) |
 | `DISCORD_WEBHOOK_AREAANIME` | Kurasi berita berpotensi viral untuk @Areaanime.id |
+| `DISCORD_WEBHOOK_DIGEST` | File teks berisi semua berita baru untuk dipilih ChatGPT/Claude (lihat Channel Digest) |
 | `GEMINI_API_KEY` | Terjemahan Gemini; wajib untuk mengirim berita berbahasa asing |
 | `GEMINI_API_KEY_2` | *Opsional*: key Gemini cadangan saat kuota key utama habis (lihat Mengaktifkan terjemahan Gemini) |
 | `ANTHROPIC_API_KEY` | *Opsional*: kurasi Areaanime dinilai Claude (default memakai Gemini) |
@@ -99,6 +101,18 @@ Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTE
 | Timeline embed X (`syndication.twitter.com`) | Tidak | Rendah, sering 429 | Cadangan lokal |
 
 Sebelum menambah akun X baru, cek dulu apakah akun itu punya mirror Telegram atau Bluesky; jalur itu tidak bergantung pada cookie X. Setiap akun X tambahan menambah beban pada cookie `TWITTER_AUTH_TOKEN`.
+
+## Channel Digest (untuk ChatGPT/Claude)
+
+Setiap run yang menemukan berita baru, bot mengirim satu file `digest-YYYYMMDD-HHMM.txt` ke `DISCORD_WEBHOOK_DIGEST`, dengan embed berisi 5 berita berskor awal tertinggi. Unduh filenya, lalu unggah ke ChatGPT atau Claude dengan pesan *"Baca file ini dan kerjakan bagian Tugas untukmu."* AI akan memilih 5-10 berita yang paling layak diposting, lengkap dengan skor, alasan, tag badge, saran judul feed gaya Areaanime, ringkasan caption, dan link sumber.
+
+Isi file:
+- **Tugas + kriteria editor + aturan judul feed.** Kriteria dan aturan judulnya sama persis dengan yang dipakai kurasi Areaanime otomatis (`curator.py`), jadi cukup diubah di satu tempat.
+- **Topik yang sudah diposting Areaanime** dalam 72 jam terakhir, supaya AI tidak mengulang cerita.
+- **Trending X** Jepang & Indonesia saat ini.
+- **Berita**: semua berita dari semua sumber (kategori, radar, X, Telegram, Bluesky) yang belum pernah masuk digest, dengan bahasa aslinya (tidak diterjemahkan, hemat kuota Gemini). Tiap berita memuat skor awal heuristik bot, jumlah media yang meliput cerita yang sama, sumber & channel, waktu terbit (WIB), ringkasan dari meta artikel, trending X yang cocok, label BOCORAN untuk channel Leaks, dan link.
+
+Berita diurutkan berdasarkan skor awal; maksimal 200 berita per file (`DIGEST_MAX_ITEMS`), sisanya yang skornya terendah dipotong. Berita yang terbit lebih dari 48 jam lalu (`NEWS_MAX_AGE_HOURS`) tidak dicantumkan. Berita hanya masuk digest sekali (`digest_seen` di history); kalau kiriman gagal, berita yang sama dicoba lagi run berikutnya. Saat `--dry-run`, isi file juga disimpan ke `digest-latest.txt` untuk dicek.
 
 ## Channel Areaanime
 

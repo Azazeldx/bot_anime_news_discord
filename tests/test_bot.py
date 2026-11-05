@@ -91,6 +91,7 @@ class PipelineTests(unittest.TestCase):
         self.stack.enter_context(patch.object(main, "HISTORY_FILE", str(self.path)))
         self.stack.enter_context(patch.object(main, "DRY_RUN", False))
         self.stack.enter_context(patch.object(main, "WH_AREAANIME", None))
+        self.stack.enter_context(patch.object(main, "WH_DIGEST", None))
         self.stack.enter_context(patch.dict(main.os.environ, {"DISCORD_WEBHOOK_TEST": "category"}))
         self.stack.enter_context(patch.object(main.time, "sleep"))
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
@@ -102,6 +103,30 @@ class PipelineTests(unittest.TestCase):
         self.stack.enter_context(patch.object(main.x_trends, "fetch", return_value=[]))
         self.stack.enter_context(patch.object(main, "enrich", side_effect=lambda item: item))
         self.stack.enter_context(patch.object(main, "build_news_embed", return_value=DiscordEmbed(title="Test")))
+
+    def test_digest_sends_new_news_once_as_file(self):
+        self.items[1]["published"] = main.datetime(2020, 1, 1, tzinfo=main.timezone.utc)  # basi
+        with patch.object(main, "WH_DIGEST", "digest"), \
+                patch.object(main, "send_webhook", return_value=True) as send:
+            main.main()
+            digests = [c for c in send.call_args_list if c.args[0] == "digest"]
+            self.assertEqual(len(digests), 1)
+            [(name, content)] = digests[0].kwargs["files"]
+            self.assertTrue(name.startswith("digest-") and name.endswith(".txt"))
+            text = content.decode("utf-8")
+            self.assertIn("https://example.com/new", text)
+            self.assertNotIn("https://example.com/old", text)
+            self.assertEqual(set(history_store.load(self.path)["digest_seen"]),
+                             {"https://example.com/new", "https://example.com/old"})
+            send.reset_mock()
+            main.main()
+        self.assertNotIn("digest", [c.args[0] for c in send.call_args_list])
+
+    def test_failed_digest_stays_retryable(self):
+        with patch.object(main, "WH_DIGEST", "digest"), \
+                patch.object(main, "send_webhook", side_effect=lambda url, *a, **kw: url != "digest"):
+            main.main()
+        self.assertEqual(history_store.load(self.path)["digest_seen"], [])
 
     def test_stale_news_is_remembered_but_not_sent(self):
         self.items[1]["published"] = main.datetime(2020, 1, 1, tzinfo=main.timezone.utc)

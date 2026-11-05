@@ -86,6 +86,9 @@ jobs:
           DISCORD_WEBHOOK_TWITTER: ${{ secrets.DISCORD_WEBHOOK_TWITTER }}
           # Bocoran anime (Sugoi LITE via Telegram t.me/sugoileaks)
           DISCORD_WEBHOOK_LEAKS: ${{ secrets.DISCORD_WEBHOOK_LEAKS }}
+          # File teks berita baru untuk dipilih ChatGPT/Claude (lihat README, Channel Digest)
+          DISCORD_WEBHOOK_DIGEST: ${{ secrets.DISCORD_WEBHOOK_DIGEST }}
+          DIGEST_MAX_ITEMS: ${{ vars.DIGEST_MAX_ITEMS }}
           # Channel kurasi berita berpotensi viral
           DISCORD_WEBHOOK_AREAANIME: ${{ secrets.DISCORD_WEBHOOK_AREAANIME }}
           # Terjemahan judul dan ringkasan melalui Gemini.

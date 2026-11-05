@@ -2,7 +2,9 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import quote, urljoin
 
 import requests
@@ -16,6 +18,7 @@ load_dotenv()
 
 import bluesky  # noqa: E402
 import curator  # noqa: E402  (baca env AREAANIME_* setelah .env dimuat)
+import digest  # noqa: E402
 import history_store  # noqa: E402
 import telegram_channels  # noqa: E402
 import x_accounts  # noqa: E402
@@ -25,7 +28,9 @@ from sources import TARGETS, parse_date, parse_rss  # noqa: E402
 
 # --- KONFIGURASI ---
 WH_AREAANIME = os.getenv("DISCORD_WEBHOOK_AREAANIME")
+WH_DIGEST = os.getenv("DISCORD_WEBHOOK_DIGEST")  # file teks berita baru untuk ChatGPT/Claude
 HISTORY_FILE = "history.json"
+DIGEST_PREVIEW = "digest-latest.txt"  # salinan lokal file digest saat --dry-run
 DRY_RUN = "--dry-run" in sys.argv   # cek hasil tanpa kirim ke Discord & tanpa simpan history
 # Berita kategori yang terbit lebih lama dari ini tidak dikirim (0 = tanpa batas), supaya jendela
 # sumber yang lebar tidak mengirim ulang berita lama.
@@ -176,15 +181,19 @@ def is_stale(item, now=None):
     return published < (now or datetime.now(timezone.utc)) - timedelta(hours=NEWS_MAX_AGE_HOURS)
 
 
-def send_webhook(url, embed, username=None, extra_images=()):
+def send_webhook(url, embed, username=None, extra_images=(), files=()):
     """Kirim embed. extra_images (maks. 3) tampil sebagai galeri: Discord menggabungkan embed
-    dengan url yang sama menjadi satu postingan berisi beberapa gambar."""
+    dengan url yang sama menjadi satu postingan berisi beberapa gambar. files = [(nama, bytes)]
+    dilampirkan sebagai file."""
     if DRY_RUN:
         gallery = f" (+{len(extra_images[:3])} gambar)" if extra_images else ""
-        print(f"    [DRY-RUN] {embed.title}{gallery}")
+        attached = f" (+file {', '.join(name for name, _ in files)})" if files else ""
+        print(f"    [DRY-RUN] {embed.title}{gallery}{attached}")
         return True
-    webhook = DiscordWebhook(url=url, username=username, rate_limit_retry=False, timeout=20)
+    webhook = DiscordWebhook(url=url, username=username, rate_limit_retry=False, timeout=60 if files else 20)
     webhook.add_embed(embed)
+    for name, content in files:
+        webhook.add_file(file=content, filename=name)
     if embed.url:
         for image in extra_images[:3]:
             extra = DiscordEmbed(url=embed.url)
@@ -213,6 +222,55 @@ def send_webhook(url, embed, username=None, extra_images=()):
         # Pesan exception requests dapat memuat token URL webhook.
         print(f"    Webhook error ({type(err).__name__}); akan dicoba pada run berikutnya.")
     return False
+
+
+def build_digest_embed(ranked, filename):
+    top = "\n".join(f"`{score:g}/10` [{clip(item['title'].split(chr(10))[0], 90)}]({item['link']}) · {item['source']}"
+                    for item, score, *_ in ranked[:5])
+    embed = DiscordEmbed(
+        title=f"🧠 Digest {len(ranked)} berita baru untuk ChatGPT/Claude",
+        description=clip(f"Unduh **{filename}**, lalu kirim ke ChatGPT/Claude dengan pesan:\n"
+                         "> Baca file ini dan kerjakan bagian \"Tugas untukmu\".\n\n"
+                         f"**Skor awal tertinggi (heuristik bot):**\n{top}", 4000),
+        color="7c4dff",
+    )
+    embed.set_footer(text="Digest otomatis • Bot Berita")
+    embed.set_timestamp()
+    return embed
+
+
+def run_digest(history, all_items, trends):
+    """Kirim satu file berisi semua berita baru sejak digest sebelumnya (lihat digest.py)."""
+    print("--> Digest untuk ChatGPT/Claude")
+    seen, links, fresh = set(history["digest_seen"]), set(), []
+    for item in all_items:
+        if item['link'] not in seen and item['link'] not in links:
+            links.add(item['link'])
+            fresh.append(item)
+    if not fresh:
+        print("    Tidak ada berita baru untuk digest.")
+        return
+    # Ringkasan & tanggal terbit dari meta artikel: konteks untuk AI dan penyaring berita lama.
+    # Hasilnya juga dipakai ulang saat kiriman kategori (enrich hanya sekali per berita).
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(enrich, fresh))
+    ranked = digest.rank([item for item in fresh if not is_stale(item)], all_items, trends)
+    if ranked:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=curator.RECENT_HOURS)
+        recent = [p['title'] for p in history["areaanime_posts"] if datetime.fromisoformat(p['ts']) >= cutoff]
+        text = digest.build(ranked, trends, recent[-30:], now)
+        filename = f"digest-{now.astimezone(digest.WIB):%Y%m%d-%H%M}.txt"
+        print(f"    {len(ranked)} berita masuk digest ({len(text.encode('utf-8')) // 1024} KB)")
+        if DRY_RUN:
+            Path(DIGEST_PREVIEW).write_text(text, encoding="utf-8")
+            print(f"    [DRY-RUN] isi digest disimpan ke {DIGEST_PREVIEW}")
+        if not send_webhook(WH_DIGEST, build_digest_embed(ranked, filename), username="Digest Berita",
+                            files=[(filename, text.encode("utf-8"))]):
+            return  # coba lagi run berikutnya dengan berita yang sama
+    history["digest_seen"].extend(item['link'] for item in fresh)
+    if not DRY_RUN:
+        save_history(history)
 
 
 # --- TAMPILAN EMBED ---
@@ -389,9 +447,9 @@ def main():
 
     # 1. Ambil semua sumber dahulu, supaya Areaanime tidak menunggu seluruh kiriman kategori.
     for site in TARGETS:
-        # Sumber radar (channel None) hanya dipakai kurasi Areaanime
+        # Sumber radar (channel None) hanya dipakai kurasi Areaanime & digest
         webhook_url = os.getenv(f"DISCORD_WEBHOOK_{site['channel']}") if site['channel'] else None
-        if not webhook_url and not WH_AREAANIME:
+        if not webhook_url and not (WH_AREAANIME or WH_DIGEST):
             print(f"Skipping {site['url']} (Webhook not set)")
             continue
 
@@ -407,6 +465,11 @@ def main():
         if webhook_url:
             category_batches.append((webhook_url, items, bool(site.get('leak'))))
 
+    trends = []
+    if WH_AREAANIME or WH_DIGEST:
+        trends = x_trends.fetch(SESSION)
+        print(f"    {len(trends)} topik trending X terbaca")
+
     # 2. Kurasi berita berpotensi viral untuk channel Areaanime
     if WH_AREAANIME:
         print("--> Kurasi Areaanime")
@@ -417,8 +480,6 @@ def main():
                 links.add(item['link'])
                 candidates.append(item)
 
-        trends = x_trends.fetch(SESSION)
-        print(f"    {len(trends)} topik trending X terbaca")
         picks, watch = curator.select(candidates, all_items, history["areaanime_posts"], trends)
         if not picks:
             print(f"    Tidak ada berita yang cukup menarik dari {len(candidates)} kandidat.")
@@ -446,6 +507,10 @@ def main():
                 for w in watch:
                     record_area_post(history, x_search(w['term']), w['key'], w['term'])
             time.sleep(1.5)
+
+    # 2b. File digest untuk ChatGPT/Claude: semua berita baru beserta konteksnya
+    if WH_DIGEST:
+        run_digest(history, all_items, trends)
 
     # 3. Kirim kategori dari yang paling lama, simpan segera setelah setiap kiriman berhasil.
     #    Bocoran paling cepat basi, jadi channel LEAKS dikirim lebih dulu.

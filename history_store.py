@@ -9,7 +9,11 @@ from pathlib import Path
 # jumlah sumber), supaya berita lama yang masih tampil di sumber lambat tidak dikirim ulang.
 HISTORY_LIMIT = 6000
 AREAANIME_SEEN_LIMIT = 6000
+DIGEST_SEEN_LIMIT = 6000
 AREAANIME_POSTS_LIMIT = 200
+# Daftar link: "sent" = terkirim ke channel kategori, "areaanime_seen" = sudah dinilai kurasi,
+# "digest_seen" = sudah masuk file digest.
+LINK_LISTS = {"sent": HISTORY_LIMIT, "areaanime_seen": AREAANIME_SEEN_LIMIT, "digest_seen": DIGEST_SEEN_LIMIT}
 
 
 def normalize(data):
@@ -17,8 +21,8 @@ def normalize(data):
         data = {"sent": data, "areaanime_seen": list(data), "areaanime_posts": []}
     if not isinstance(data, dict):
         raise ValueError("Format history tidak valid")
-    result = {key: data.get(key, []) for key in ("sent", "areaanime_seen", "areaanime_posts")}
-    for key in ("sent", "areaanime_seen"):
+    result = {key: data.get(key, []) for key in (*LINK_LISTS, "areaanime_posts")}
+    for key in LINK_LISTS:
         if not isinstance(result[key], list) or any(not isinstance(link, str) for link in result[key]):
             raise ValueError(f"Format history {key} tidak valid")
     posts = result["areaanime_posts"]
@@ -43,7 +47,7 @@ def load(path):
 def merge(left, right):
     left, right = normalize(left), normalize(right)
     result = {}
-    for key, limit in (("sent", HISTORY_LIMIT), ("areaanime_seen", AREAANIME_SEEN_LIMIT)):
+    for key, limit in LINK_LISTS.items():
         # Pertahankan kemunculan terakhir saat gabungan harus dipangkas.
         links = left[key] + right[key]
         result[key] = list(reversed(dict.fromkeys(reversed(links))))[-limit:]

@@ -141,6 +141,18 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("digest", [c.args[0] for c in send.call_args_list])
         self.assertGreater(history_store.load(self.path)["digest_last"], recent)
 
+    def test_upcoming_news_are_translated_in_one_batch(self):
+        for item in self.items:
+            item['lang'] = 'ja'
+        with patch.object(main.TRANSLATOR, 'translate_many', return_value=[('Lama', ''), ('Baru', '')]) as many, \
+                patch.object(main.TRANSLATOR, 'translate') as single, \
+                patch.object(main, 'build_news_embed', side_effect=lambda item: main.translate_item(item) and DiscordEmbed()), \
+                patch.object(main, 'send_webhook', return_value=True):
+            main.main()
+        many.assert_called_once()
+        single.assert_not_called()
+        self.assertEqual([i['title_id'] for i in self.items], ['Baru', 'Lama'])
+
     def test_stale_news_is_remembered_but_not_sent(self):
         self.items[1]["published"] = main.datetime(2020, 1, 1, tzinfo=main.timezone.utc)
         with patch.object(main, "send_webhook", return_value=True) as send:

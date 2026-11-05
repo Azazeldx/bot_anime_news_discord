@@ -39,7 +39,7 @@ Isi di **Settings → Secrets and variables → Actions** (atau di `.env` saat m
 | `DISCORD_WEBHOOK_AREAANIME` | Kurasi berita berpotensi viral untuk @Areaanime.id |
 | `DISCORD_WEBHOOK_DIGEST` | File teks berisi semua berita baru untuk dipilih ChatGPT/Claude (lihat Channel Digest) |
 | `GEMINI_API_KEY` | Terjemahan Gemini; wajib untuk mengirim berita berbahasa asing |
-| `GEMINI_API_KEY_2` | *Opsional*: key Gemini cadangan saat kuota key utama habis (lihat Mengaktifkan terjemahan Gemini) |
+| `GEMINI_API_KEY_2` | *Opsional*: key Gemini cadangan saat key utama error atau kuotanya habis (lihat Mengaktifkan terjemahan Gemini) |
 | `ANTHROPIC_API_KEY` | *Opsional*: kurasi Areaanime dinilai Claude (default memakai Gemini) |
 | `TWITTER_AUTH_TOKEN` | Cookie `auth_token` akun X untuk RSSHub di GitHub Actions (lihat Channel Twitter) |
 | `X_RSS_URL` | *Opsional*: bridge RSS milik sendiri, menggantikan RSSHub bawaan workflow |
@@ -66,13 +66,15 @@ Jeda antarpermintaan default 6 detik untuk mengurangi rate limit. Bisa diubah le
 - Setiap sumber dibaca **15 berita terbaru** (`SOURCE_LIMIT`; radar Areaanime 10). Jadwal GitHub Actions di repo gratis sering tertunda berjam-jam, jadi jendela 5 berita membuat banyak artikel terlewat di antara dua run.
 - Berita kategori yang terbit lebih dari **48 jam** lalu (`NEWS_MAX_AGE_HOURS`, 0 = tanpa batas) dicatat di history tanpa dikirim. Tanggal diambil dari RSS, atau dari meta artikel (`article:published_time`, JSON-LD `datePublished`, `<time datetime>`). Dengan begitu jendela yang lebih lebar tidak mengirim ulang artikel lama dari sumber yang jarang update.
 - Postingan X/Telegram/Bluesky dengan beberapa gambar dikirim sebagai galeri (maks. 4 gambar).
-- Cron memakai menit ganjil (`7,22,37,52`) karena GitHub paling sering menunda jadwal di awal jam. Kalau jeda masih terlalu panjang, picu workflow dari luar, mis. [cron-job.org](https://cron-job.org/) yang memanggil `POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/run_bot.yml/dispatches` dengan body `{"ref":"main"}` dan fine-grained token berizin *Actions: write*.
+- **Run berantai tiap ±10 menit.** Cron GitHub di repo gratis ternyata hanya jalan tiap 3-8 jam. Karena itu langkah terakhir workflow memicu run berikutnya sendiri (`workflow_dispatch`), paling cepat `RUN_INTERVAL_MINUTES` (default 10) menit setelah run sebelumnya mulai. Cron (`7,22,37,52`) tetap ada sebagai cadangan kalau rantainya putus. Hentikan rantai dengan repository variable `SELF_CHAIN=false`. Repo ini publik, jadi menit GitHub Actions gratis; tiap run juga membaca 13 akun X lewat cookie `TWITTER_AUTH_TOKEN`, jadi naikkan interval kalau akun X mulai dibatasi.
+- **Terjemahan batch.** Berita dikirim berurutan, dan sebelum dikirim 10 berita berikutnya diterjemahkan dalam **satu** request Gemini (`translate_many`), bukan satu request per berita. Uji coba: 10 berita (Oricon + Sugoi) selesai dalam 10 detik. Item yang gagal di batch diterjemahkan ulang satu per satu. Meta artikel (ringkasan, gambar, tanggal) diambil paralel sebelum kiriman dimulai.
+- **Model cadangan.** Kalau model terjemahan (`gemini-3.5-flash-lite`) overload/hilang (5xx/404/timeout) di semua key, bot pindah ke `GEMINI_FALLBACK_MODEL` (default `gemini-3.1-flash-lite`, model berbeda yang cepat; `gemini-flash-lite-latest` hanya alias model utama).
 - Jendela lebar berarti lebih banyak terjemahan Gemini per hari; pantau kuota di Google AI Studio. Kurangi `SOURCE_LIMIT` kalau kuota sering habis.
-- Channel Leaks dikirim paling dulu karena bocoran paling cepat basi. Setelah 35 menit (`RUN_TIME_LIMIT_MINUTES`, 0 = tanpa batas) bot berhenti mengirim berita baru supaya selesai sebelum timeout langkah GitHub Actions (40 menit); sisanya dikirim run berikutnya. Saat Gemini lambat, satu terjemahan bisa makan 20–60 detik, jadi run pertama setelah jeda panjang mungkin butuh beberapa run untuk menghabiskan antrean.
+- Channel Leaks dikirim paling dulu karena bocoran paling cepat basi. Setelah 35 menit (`RUN_TIME_LIMIT_MINUTES`, 0 = tanpa batas) bot berhenti mengirim berita baru supaya selesai sebelum timeout langkah GitHub Actions (40 menit); sisanya dikirim run berikutnya.
 
 ## Channel Twitter
 
-Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTER`, diterjemahkan ke Bahasa Indonesia dengan teks asli tetap ditampilkan: SomosKudasai (Spanyol), animetrends, Dexerto, animetv_jp, MangaMoguraRE, WSJ_manga, AniNewsAndFacts, seiyuucorner, dan Seifukuanimehub.
+Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTER`, diterjemahkan ke Bahasa Indonesia dengan teks asli tetap ditampilkan: SomosKudasai (Spanyol), animetrends, Dexerto, animetv_jp, MangaMoguraRE, WSJ_manga, AniNewsAndFacts, seiyuucorner, Seifukuanimehub, dan animeupdates.
 
 - Maksimal `SOURCE_LIMIT` postingan per akun per run, hanya yang berumur ≤ 24 jam (`X_MAX_AGE_HOURS`). Retweet dan balasan dilewati.
 - Daftar akun bisa diganti lewat variable `X_TWITTER_ACCOUNTS` (format `akun:bahasa,akun:bahasa`, mis. `Dexerto:en,SomosKudasai:es`).
@@ -89,7 +91,7 @@ Postingan terbaru dari akun X berikut dikirim ke channel `DISCORD_WEBHOOK_TWITTE
 - Hanya postingan ≤ 24 jam (`TELEGRAM_MAX_AGE_HOURS`). Postingan gambar tanpa teks dilewati.
 - Channel lain bisa ditambahkan lewat variable `TELEGRAM_CHANNELS` (format `channel:bahasa:Nama`, mis. `sugoileaks:en:Sugoi LITE`). Semua masuk channel Leaks dan ikut dinilai Areaanime.
 
-**Akun X leaker.** Channel Leaks juga membaca akun X yang tidak punya mirror Telegram, lewat RSSHub yang sama dengan channel Twitter: [@d0nut2x](https://x.com/d0nut2x) (leaker anime), [@animeupdates](https://x.com/animeupdates) (info jumlah episode & jadwal yang cepat), [@pewpiece](https://x.com/pewpiece) dan [@YonkouProd](https://x.com/YonkouProd) (spoiler One Piece). Daftar bisa diganti lewat variable `X_LEAKS_ACCOUNTS` (format `akun:bahasa,akun:bahasa`). Akun yang membagikan link raw scan bajakan (mis. GSPLeaks, WONPE4CE) sengaja tidak dimasukkan karena berisiko DMCA. @SugoiBingus (akun cadangan Sugoi) tidak perlu ditambahkan karena sudah ter-mirror ke `t.me/sugoileaks`.
+**Akun X leaker.** Channel Leaks juga membaca akun X yang tidak punya mirror Telegram, lewat RSSHub yang sama dengan channel Twitter: [@d0nut2x](https://x.com/d0nut2x) (leaker anime), [@pewpiece](https://x.com/pewpiece) dan [@YonkouProd](https://x.com/YonkouProd) (spoiler One Piece). @animeupdates ada di channel Twitter karena isinya kebanyakan info resmi. Daftar bisa diganti lewat variable `X_LEAKS_ACCOUNTS` (format `akun:bahasa,akun:bahasa`). Akun yang membagikan link raw scan bajakan (mis. GSPLeaks, WONPE4CE) sengaja tidak dimasukkan karena berisiko DMCA. @SugoiBingus (akun cadangan Sugoi) tidak perlu ditambahkan karena sudah ter-mirror ke `t.me/sugoileaks`.
 
 **Jalur membaca data "Twitter" yang dipakai bot:**
 

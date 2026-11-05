@@ -69,7 +69,7 @@ class TelegramTests(unittest.TestCase):
     def test_leak_sources_go_to_leaks_channel_with_label(self):
         leaks = [s for s in sources.TARGETS if s.get("channel") == "LEAKS"]
         self.assertEqual([s["telegram"] for s in leaks if "telegram" in s], ["sugoileaks"])
-        self.assertEqual({s["x"] for s in leaks if "x" in s}, {"d0nut2x", "animeupdates", "pewpiece", "YonkouProd"})
+        self.assertEqual({s["x"] for s in leaks if "x" in s}, {"d0nut2x", "pewpiece", "YonkouProd"})
         self.assertTrue(all(s.get("leak") for s in leaks))
 
     def test_leak_embed(self):

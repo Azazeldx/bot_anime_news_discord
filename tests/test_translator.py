@@ -22,7 +22,7 @@ def response(status=200, title="Judul Indonesia", summary="Ringkasan Indonesia",
 
 class GeminiTests(unittest.TestCase):
     def setUp(self):
-        self.translator = GeminiTranslator(api_key="test-api-key", request_interval=0)
+        self.translator = GeminiTranslator(api_key="test-api-key", request_interval=0, fallback_model="")
 
     def test_direct_translation_of_title_and_summary_has_timeout_and_cache(self):
         with patch("translator.requests.post", side_effect=lambda *args, **kwargs: response()) as post:
@@ -156,3 +156,22 @@ class GeminiTests(unittest.TestCase):
                 self.assertEqual(translator.translate("Title", "Summary", "en")[0], "Judul Indonesia")
             self.assertEqual([c.kwargs["headers"]["x-goog-api-key"] for c in post.call_args_list], ["key-1", "key-2"])
             sleep.assert_not_called()
+
+    def test_overloaded_model_on_all_keys_falls_back_to_other_model(self):
+        translator = GeminiTranslator(api_key=["key-1", "key-2"], request_interval=0, model="main",
+                                      fallback_model="backup")
+        with patch("builtins.print"), patch("translator.time.sleep"), \
+                patch("translator.requests.post", side_effect=[response(503), response(503), response()]) as post:
+            self.assertEqual(translator.translate("Title", "Summary", "en")[0], "Judul Indonesia")
+        self.assertEqual([(c.args[0].split("/models/")[1].split(":")[0], c.kwargs["headers"]["x-goog-api-key"])
+                          for c in post.call_args_list], [("main", "key-1"), ("main", "key-2"), ("backup", "key-1")])
+
+    def test_batch_translation_keeps_good_items_when_one_is_invalid(self):
+        rows = [{"id": 1, "title": "Dua", "summary": ""}, {"id": 0, "title": "Satu", "summary": "Isi"},
+                {"id": 2, "title": "", "summary": ""}]
+        result = response(raw={"candidates": [{"finishReason": "STOP",
+                                               "content": {"parts": [{"text": json.dumps({"items": rows})}]}}]})
+        with patch("translator.requests.post", return_value=result) as post:
+            out = self.translator.translate_many([("One", "Body", "ja"), ("Two", "", "en"), ("Three", "", "en")])
+        self.assertEqual(out, [("Satu", "Isi"), ("Dua", ""), None])
+        self.assertEqual(post.call_count, 1)

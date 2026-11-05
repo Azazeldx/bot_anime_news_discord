@@ -78,7 +78,7 @@ class IntegrationTests(unittest.TestCase):
     def test_all_requested_accounts_go_to_twitter_channel(self):
         handles = {s["x"] for s in sources.TARGETS if s.get("channel") == "TWITTER"}
         self.assertEqual(handles, {"SomosKudasai", "animetrends", "Dexerto", "animetv_jp", "MangaMoguraRE",
-                                   "WSJ_manga", "AniNewsAndFacts", "seiyuucorner", "Seifukuanimehub"})
+                                   "WSJ_manga", "AniNewsAndFacts", "seiyuucorner", "Seifukuanimehub", "animeupdates"})
 
     def test_tweet_items_skip_article_enrichment(self):
         site = {"x": "Dexerto", "lang": "en", "channel": "TWITTER"}

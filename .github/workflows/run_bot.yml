@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write # Izin supaya bot bisa update file history.json
+  actions: write  # Izin memicu run berikutnya (langkah "Jadwalkan Run Berikutnya")
 
 # Jangan sampai 2 run jalan bersamaan (bisa kirim berita dobel & bentrok saat push history)
 concurrency:
@@ -41,6 +42,9 @@ jobs:
           TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
 
     steps:
+      - name: Catat Waktu Mulai
+        run: echo "RUN_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Ambil Kodingan (Checkout)
         id: checkout
         uses: actions/checkout@v4
@@ -99,6 +103,7 @@ jobs:
           # Key cadangan: dipakai otomatis saat key utama kena kuota/rate limit (429) atau ditolak
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+          GEMINI_FALLBACK_MODEL: ${{ vars.GEMINI_FALLBACK_MODEL }}
           GEMINI_REQUEST_INTERVAL: ${{ vars.GEMINI_REQUEST_INTERVAL || '6' }}
           # Kurasi Areaanime dinilai Gemini (pakai GEMINI_API_KEY di atas); Claude dipakai kalau key ini diisi
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -153,3 +158,18 @@ jobs:
           name: news-history-${{ github.run_id }}
           path: history.json
           retention-days: 7
+
+      - name: Jadwalkan Run Berikutnya
+        # Cron GitHub di repo gratis sering tertunda 3-8 jam, terlalu lambat untuk berita Jepang.
+        # Run ini memicu run berikutnya sendiri, paling cepat RUN_INTERVAL_MINUTES (default 10) menit
+        # setelah run ini mulai. Cron di atas tetap jadi cadangan kalau rantai ini putus.
+        # workflow_dispatch adalah satu-satunya event dari GITHUB_TOKEN yang boleh memicu run baru.
+        # Matikan dengan repository variable SELF_CHAIN=false.
+        if: always() && steps.checkout.outcome == 'success' && !inputs.dry_run && vars.SELF_CHAIN != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTERVAL_MINUTES: ${{ vars.RUN_INTERVAL_MINUTES || '10' }}
+        run: |
+          wait=$(( INTERVAL_MINUTES * 60 - ($(date +%s) - RUN_STARTED) ))
+          if (( wait > 0 )); then echo "Tunggu ${wait} detik"; sleep "$wait"; fi
+          gh workflow run run_bot.yml --ref "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"

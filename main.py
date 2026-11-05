@@ -23,7 +23,7 @@ import history_store  # noqa: E402
 import telegram_channels  # noqa: E402
 import x_accounts  # noqa: E402
 import x_trends  # noqa: E402
-from translator import GeminiTranslator, TranslationUnavailable  # noqa: E402
+from translator import BATCH_SIZE, GeminiTranslator, TranslationUnavailable  # noqa: E402
 from sources import TARGETS, parse_date, parse_rss  # noqa: E402
 
 # --- KONFIGURASI ---
@@ -68,34 +68,57 @@ def save_history(history):
     history_store.save(HISTORY_FILE, history)
 
 
+def translation_input(item):
+    """(judul, ringkasan) yang dikirim ke penerjemah."""
+    title, summary = item['title'], clip(item.get('summary'), 350)
+    if is_social(item.get('site') or {}):
+        # Teks postingan panjang: kirim baris pertama sebagai judul dan sisanya sebagai ringkasan,
+        # supaya model tidak meringkas seluruh postingan menjadi satu judul.
+        title, _, rest = title.partition("\n")
+        summary = rest.strip()
+    return title, summary
+
+
+def set_translation(item, title_id, summary_id):
+    if is_social(item.get('site') or {}):
+        title_id, summary_id = (f"{title_id}\n\n{summary_id}" if summary_id else title_id), ""
+    item['title_id'], item['summary_id'] = title_id, summary_id
+
+
 def translate_item(item):
     """Terjemahkan judul + ringkasan dalam satu request, tanpa kirim judul asing saat gagal."""
     if 'title_id' in item:
         return item
     if item.get('_translation_error'):
         raise TranslationUnavailable(item['_translation_error'])
-    title, summary = item['title'], clip(item.get('summary'), 350)
-    social = is_social(item.get('site') or {})
-    if social:
-        # Teks postingan panjang: kirim baris pertama sebagai judul dan sisanya sebagai ringkasan,
-        # supaya model tidak meringkas seluruh postingan menjadi satu judul.
-        title, _, rest = title.partition("\n")
-        summary = rest.strip()
     try:
-        title_id, summary_id = TRANSLATOR.translate(title, summary, item['lang'])
+        set_translation(item, *TRANSLATOR.translate(*translation_input(item), item['lang']))
     except TranslationUnavailable as error:
         item['_translation_error'] = str(error)
         raise
-    if social:
-        title_id, summary_id = (f"{title_id}\n\n{summary_id}" if summary_id else title_id), ""
-    item['title_id'], item['summary_id'] = title_id, summary_id
     return item
+
+
+def translate_ahead(items):
+    """Terjemahkan BATCH_SIZE berita berikutnya dalam satu request (jauh lebih cepat & hemat kuota
+    daripada satu request per berita). Gagal = dibiarkan; translate_item mencoba satu per satu."""
+    todo = [item for item in items if item['lang'] != 'id' and 'title_id' not in item
+            and not item.get('_translation_error')][:BATCH_SIZE]
+    if len(todo) < 2:
+        return
+    try:
+        results = TRANSLATOR.translate_many([(*translation_input(item), item['lang']) for item in todo])
+    except TranslationUnavailable as error:
+        print(f"    Terjemahan batch gagal ({error}); dicoba satu per satu")
+        return
+    for item, result in zip(todo, results):
+        if result:
+            set_translation(item, *result)
 
 
 def is_social(site):
     """Postingan X / Telegram: teks lengkap ada di "title", ditampilkan dengan embed sosial."""
     return 'x' in site or 'telegram' in site
-    return item
 
 
 def clip(text, limit):
@@ -526,32 +549,32 @@ def main():
     # 3. Kirim kategori dari yang paling lama, simpan segera setelah setiap kiriman berhasil.
     #    Bocoran paling cepat basi, jadi channel LEAKS dikirim lebih dulu.
     category_batches.sort(key=lambda batch: not batch[2])
-    for webhook_url, items, _ in category_batches:
-        for item in reversed(items):
-            if item['link'] in sent:
-                continue
-            if deadline and time.monotonic() > deadline:
-                break
-            enrich(item)
-            if is_stale(item):
-                # Berita lama yang baru masuk jendela sumber: tandai saja, jangan kirim.
-                print(f"    [LAMA] {item['source']}: {item['title'][:40]}... (terbit {item['published']:%Y-%m-%d})")
-                mark_sent(history, sent, item['link'])
-                continue
-            print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
-            try:
-                embed = build_news_embed(item)
-            except TranslationUnavailable as error:
-                print(f"    Berita ditunda: {error}")
-                continue
-            if send_webhook(webhook_url, embed, extra_images=gallery(item)):
-                mark_sent(history, sent, item['link'])
-            time.sleep(1.5)
-        else:
+    queue = [(url, item) for url, items, _ in category_batches for item in reversed(items) if item['link'] not in sent]
+    with ThreadPoolExecutor(8) as pool:  # meta artikel diambil paralel, bukan satu per satu saat kirim
+        list(pool.map(enrich, [item for _, item in queue]))
+    for position, (webhook_url, item) in enumerate(queue):
+        if item['link'] in sent:
             continue
-        # Berhenti rapi sebelum timeout GitHub Actions; sisanya dicoba lagi pada run berikutnya.
-        print(f"Batas waktu run ({RUN_TIME_LIMIT_MINUTES:g} menit) tercapai; sisa berita dikirim run berikutnya.")
-        break
+        if deadline and time.monotonic() > deadline:
+            # Berhenti rapi sebelum timeout GitHub Actions; sisanya dicoba lagi pada run berikutnya.
+            print(f"Batas waktu run ({RUN_TIME_LIMIT_MINUTES:g} menit) tercapai; sisa berita dikirim run berikutnya.")
+            break
+        if is_stale(item):
+            # Berita lama yang baru masuk jendela sumber: tandai saja, jangan kirim.
+            print(f"    [LAMA] {item['source']}: {item['title'][:40]}... (terbit {item['published']:%Y-%m-%d})")
+            mark_sent(history, sent, item['link'])
+            continue
+        translate_ahead([next_item for _, next_item in queue[position:position + 3 * BATCH_SIZE]
+                         if next_item['link'] not in sent and not is_stale(next_item)])
+        print(f"    [NEW] {item['source']}: {item['title'][:40]}...")
+        try:
+            embed = build_news_embed(item)
+        except TranslationUnavailable as error:
+            print(f"    Berita ditunda: {error}")
+            continue
+        if send_webhook(webhook_url, embed, extra_images=gallery(item)):
+            mark_sent(history, sent, item['link'])
+        time.sleep(1.5)
 
     if DRY_RUN:
         print("DRY-RUN: history tidak disimpan.")

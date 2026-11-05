@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from translator import KEY_ERRORS, gemini_keys
+from translator import FALLBACK_ERRORS, gemini_keys
 
 # --- KONFIGURASI (bisa diubah lewat env) ---
 MIN_SCORE = float(os.getenv("AREAANIME_MIN_SCORE", "7"))
@@ -498,8 +498,9 @@ def _gemini(payload):
             print("    [Areaanime] Output Gemini tidak valid")
             return None
         print(f"    [Areaanime] Gemini {model} gagal ({status})")
-        if status in KEY_ERRORS and key + 1 < len(keys):
-            key += 1  # kuota habis / key ditolak: ulangi model yang sama dengan key cadangan
+        # ReadTimeout tidak pindah key: model lambat untuk semua key, langsung ke model cadangan di bawah.
+        if (status in FALLBACK_ERRORS or status in ("ConnectionError", "ConnectTimeout")) and key + 1 < len(keys):
+            key += 1  # key utama gagal/penuh: ulangi model yang sama dengan key cadangan
             print(f"    [Areaanime] Beralih ke Gemini key {key + 1}")
             continue
         # 404 = nama model sudah tidak ada; lanjut ke model cadangan

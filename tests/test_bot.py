@@ -128,6 +128,19 @@ class PipelineTests(unittest.TestCase):
             main.main()
         self.assertEqual(history_store.load(self.path)["digest_seen"], [])
 
+    def test_digest_waits_for_enough_news_or_interval(self):
+        recent = (main.datetime.now(main.timezone.utc) - main.timedelta(minutes=5)).isoformat(timespec="seconds")
+        self.path.write_text(json.dumps({"digest_last": recent}), encoding="utf-8")
+        with patch.object(main, "WH_DIGEST", "digest"), \
+                patch.object(main, "send_webhook", return_value=True) as send:
+            main.main()  # 2 berita < 100, digest terakhir baru saja: tunggu
+            self.assertNotIn("digest", [c.args[0] for c in send.call_args_list])
+            self.assertEqual(history_store.load(self.path)["digest_seen"], [])
+            with patch.object(main.digest, "MIN_ITEMS", 2):
+                main.main()  # jumlah tercapai walau belum 2 jam
+        self.assertIn("digest", [c.args[0] for c in send.call_args_list])
+        self.assertGreater(history_store.load(self.path)["digest_last"], recent)
+
     def test_stale_news_is_remembered_but_not_sent(self):
         self.items[1]["published"] = main.datetime(2020, 1, 1, tzinfo=main.timezone.utc)
         with patch.object(main, "send_webhook", return_value=True) as send:

@@ -240,23 +240,33 @@ def build_digest_embed(ranked, filename):
 
 
 def run_digest(history, all_items, trends):
-    """Kirim satu file berisi semua berita baru sejak digest sebelumnya (lihat digest.py)."""
+    """Kirim satu file berisi berita baru sejak digest sebelumnya (lihat digest.py), setelah
+    terkumpul digest.MIN_ITEMS berita atau digest.INTERVAL_HOURS jam sejak digest terakhir."""
     print("--> Digest untuk ChatGPT/Claude")
+    now = datetime.now(timezone.utc)
+    last = history["digest_last"]
+    due = not last or now - datetime.fromisoformat(last) >= timedelta(hours=digest.INTERVAL_HOURS)
     seen, links, fresh = set(history["digest_seen"]), set(), []
     for item in all_items:
         if item['link'] not in seen and item['link'] not in links:
             links.add(item['link'])
             fresh.append(item)
-    if not fresh:
-        print("    Tidak ada berita baru untuk digest.")
+    waiting = (f"    {{}} berita baru terkumpul; digest dikirim setelah {digest.MIN_ITEMS} berita "
+               f"atau {digest.INTERVAL_HOURS:g} jam sejak digest terakhir.")
+    if not fresh or (not due and len(fresh) < digest.MIN_ITEMS):  # cek murah sebelum enrich
+        print(waiting.format(len(fresh)))
         return
+    # shortcut: berita yang menunggu tidak disimpan; yang keburu keluar dari jendela sumber
+    # (SOURCE_LIMIT) sebelum digest terkirim hilang. Simpan item ke history kalau run jadi sering.
     # Ringkasan & tanggal terbit dari meta artikel: konteks untuk AI dan penyaring berita lama.
     # Hasilnya juga dipakai ulang saat kiriman kategori (enrich hanya sekali per berita).
     with ThreadPoolExecutor(8) as pool:
         list(pool.map(enrich, fresh))
     ranked = digest.rank([item for item in fresh if not is_stale(item)], all_items, trends)
+    if not due and len(ranked) < digest.MIN_ITEMS:
+        print(waiting.format(len(ranked)))
+        return
     if ranked:
-        now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=curator.RECENT_HOURS)
         recent = [p['title'] for p in history["areaanime_posts"] if datetime.fromisoformat(p['ts']) >= cutoff]
         text = digest.build(ranked, trends, recent[-30:], now)
@@ -268,6 +278,7 @@ def run_digest(history, all_items, trends):
         if not send_webhook(WH_DIGEST, build_digest_embed(ranked, filename), username="Digest Berita",
                             files=[(filename, text.encode("utf-8"))]):
             return  # coba lagi run berikutnya dengan berita yang sama
+        history["digest_last"] = now.isoformat(timespec="seconds")
     history["digest_seen"].extend(item['link'] for item in fresh)
     if not DRY_RUN:
         save_history(history)

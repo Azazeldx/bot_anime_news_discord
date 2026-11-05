@@ -147,3 +147,12 @@ class GeminiTests(unittest.TestCase):
             self.assertEqual(GeminiTranslator().api_keys, ["a"])
         with patch.dict("translator.os.environ", {"GEMINI_API_KEY": "", "GEMINI_API_KEY_2": "b"}):
             self.assertEqual(GeminiTranslator().api_key, "b")
+
+    def test_server_error_or_timeout_on_first_key_falls_back_to_second(self):
+        for failure in (response(503), requests.ConnectionError("down")):
+            translator = GeminiTranslator(api_key=["key-1", "key-2"], request_interval=0)
+            with self.subTest(failure=failure), patch("builtins.print"), patch("translator.time.sleep") as sleep, \
+                    patch("translator.requests.post", side_effect=[failure, response()]) as post:
+                self.assertEqual(translator.translate("Title", "Summary", "en")[0], "Judul Indonesia")
+            self.assertEqual([c.kwargs["headers"]["x-goog-api-key"] for c in post.call_args_list], ["key-1", "key-2"])
+            sleep.assert_not_called()

@@ -23,9 +23,10 @@ OUTPUT_SCHEMA = {
 }
 
 
-# Status yang berarti key ini tidak bisa dipakai (kuota habis / rate limit / key ditolak):
-# pindah ke key cadangan sebelum menyerah.
-KEY_ERRORS = (400, 401, 403, 429)
+# Status yang membuat bot pindah ke key cadangan sebelum menyerah: key ditolak, kuota/rate limit
+# habis, atau server sibuk/error (key kedua dari akun lain bisa saja masih dilayani).
+# 404 tidak termasuk karena nama model yang salah juga salah untuk key lain.
+FALLBACK_ERRORS = (400, 401, 403, 429, 500, 502, 503, 504)
 
 
 def gemini_keys():
@@ -58,13 +59,12 @@ class GeminiTranslator:
         """Key yang sedang dipakai ("" kalau tidak ada)."""
         return self.api_keys[self.key_index] if self.key_index < len(self.api_keys) else ""
 
-    def _next_key(self, status):
+    def _next_key(self, reason):
         """Pindah ke key cadangan. Return False kalau tidak ada key lain."""
         if self.key_index + 1 >= len(self.api_keys):
             return False
         self.key_index += 1
-        print(f"    Gemini key {self.key_index} ditolak/kuota habis (HTTP {status}); "
-              f"beralih ke key {self.key_index + 1}")
+        print(f"    Gemini key {self.key_index} gagal ({reason}); beralih ke key {self.key_index + 1}")
         return True
 
     def translate(self, title, summary, source_lang):
@@ -110,7 +110,7 @@ class GeminiTranslator:
                         self.failures = 0
                         return result
                     reason = f"Gemini HTTP {status}"
-                    if status in KEY_ERRORS and self._next_key(status):
+                    if status in FALLBACK_ERRORS and self._next_key(reason):
                         attempt = 0  # key baru mendapat jatah percobaan sendiri, tanpa jeda
                         continue
                     if status in (400, 401, 403, 404):
@@ -123,6 +123,9 @@ class GeminiTranslator:
                         break
             except requests.RequestException as error:
                 reason = f"Gemini {type(error).__name__}"
+                if self._next_key(reason):
+                    attempt = 0
+                    continue
                 delay = 5
             except (ValueError, KeyError, IndexError, TypeError):
                 # Output terpotong/rusak sering hanya sesekali; coba sekali lagi tanpa jeda tambahan.

@@ -13,6 +13,8 @@ import curator
 
 MAX_ITEMS = int(os.getenv("DIGEST_MAX_ITEMS") or 200)  # berita skor terendah dipotong
 TEXT_LIMIT = 600
+MIN_ITEMS = int(os.getenv("DIGEST_MIN_ITEMS") or 100)  # kirim begitu berita baru sebanyak ini terkumpul,
+INTERVAL_HOURS = float(os.getenv("DIGEST_INTERVAL_HOURS") or 2)  # atau sudah sekian jam sejak digest terakhir
 SUMMARY_LIMIT = 400
 MAX_TRENDS = 40
 WIB = timezone(timedelta(hours=7))

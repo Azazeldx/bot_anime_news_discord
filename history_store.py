@@ -32,6 +32,10 @@ def normalize(data):
         for post in posts
     ):
         raise ValueError("Format history areaanime_posts tidak valid")
+    # Waktu kiriman digest terakhir (ISO 8601 UTC), "" kalau belum pernah.
+    result["digest_last"] = data.get("digest_last", "")
+    if not isinstance(result["digest_last"], str):
+        raise ValueError("Format history digest_last tidak valid")
     return result
 
 
@@ -53,6 +57,7 @@ def merge(left, right):
         result[key] = list(reversed(dict.fromkeys(reversed(links))))[-limit:]
     posts = {(p["link"], p["ts"]): p for p in left["areaanime_posts"] + right["areaanime_posts"]}
     result["areaanime_posts"] = sorted(posts.values(), key=lambda p: p["ts"])[-AREAANIME_POSTS_LIMIT:]
+    result["digest_last"] = max(left["digest_last"], right["digest_last"])  # format ISO sama, urut = urut waktu
     return result
 
 
